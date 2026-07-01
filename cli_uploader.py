@@ -2,7 +2,8 @@ import os
 import re
 import glob
 import argparse
-from datetime import datetime, timezone
+# timedelta এবং timezone ইম্পোর্ট করা হয়েছে টাইমজোন কনভার্সনের জন্য
+from datetime import datetime, timezone, timedelta
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -18,6 +19,31 @@ CREDENTIALS_DIR = 'Credentials_Storage'
 LANGUAGE_TO_CHANNEL_MAP = {'English':'NextRead English','Summary':'NextRead Summary','Deutsch':'NextRead Deutsch','Nederlands':'NextRead Nederlands','বাংলা':'NextRead বাংলা','हिन्दी':'NextRead हिन्दी','العربية':'NextRead العربية','中文':'NextRead 中文 (繁體)','日本語':'NextRead 日本語','Русский':'NextRead Русский','Türkçe':'NextRead Türkçe','Polski':'NextRead Polski','Português':'NextRead Português','Indonesia':'NextRead Indonesia','한국어':'NextRead 한국어','Italiano':'NextRead Italiano','ελληνικά':'NextRead ελληνικά','Tiếng Việt':'NextRead Tiếng Việt','Français':'NextRead Français','Español':'NextRead Español','Norsk':'NextRead Norsk'}
 LANGUAGE_TO_FOLDER_MAP = {'English':'English','Summary':'Summary','Deutsch':'Deutsch','Nederlands':'Nederlands','বাংলা':'বাংলা','हिन्दी':'हिन्दी','العربية':'العربية','中文':'中文','日本語':'日本語','Русский':'Русский','Türkçe':'Türkçe','Polski':'Polski','Português':'Português','Indonesia':'Indonesia','한국어':'한국어','Italiano':'Italiano','ελληνικά':'ελληνικά','Tiếng Việt':'Tiếng Việt','Français':'Français','Español':'Español','Norsk':'Norsk'}
 CHANNEL_TO_ACCOUNT_MAP = {'NextRead English':'main_en','NextRead Summary':'main_sum','NextRead Deutsch':'main_de','NextRead Nederlands':'main_nl','NextRead বাংলা':'main_bn','NextRead हिन्दी':'main_hi','NextRead العربية':'main_ar','NextRead 中文 (繁體)':'main_zh','NextRead 日本語':'main_ja','NextRead Русский':'main_ru','NextRead Türkçe':'main_tr','NextRead Polski':'main_pl','NextRead Português':'main_pt','NextRead Indonesia':'main_id','NextRead 한국어':'main_ko','NextRead Italiano':'main_it','NextRead ελληνικά':'main_el','NextRead Tiếng Việt':'main_vi','NextRead Français':'france_spain_fr','NextRead Español':'france_spain_es','NextRead Norsk':'norway_no'}
+
+def calculate_upload_schedule():
+    """
+    বাংলাদেশি সময় অনুযায়ী শিডিউল হিসাব করার স্বয়ংক্রিয় লজিক
+    """
+    # গিটহাব সার্ভারের বর্তমান UTC সময় নেওয়া
+    now_utc = datetime.now(timezone.utc)
+    # বাংলাদেশ টাইমজোনে (UTC+6) রূপান্তর করা
+    bd_tz = timezone(timedelta(hours=6))
+    now_bd = now_utc.astimezone(bd_tz)
+    current_bd_hour = now_bd.hour
+
+    # রাত ১১টা থেকে ১২টার মধ্যে হলে (Hour ২৩) তাৎক্ষণিক পাবলিশ
+    if current_bd_hour == 23:
+        print("INFO [Auto-Schedule]: Current BD Time is between 11:00 PM and 12:00 AM. Mode: PUBLISH NOW.")
+        return 'now', None
+    # অন্য যেকোনো সময় হলে আজকের দিনেই রাত ১১টায় শিডিউল (যা UTC বিকাল ৫:০০ টা)
+    else:
+        schedule_date_bd = now_bd.replace(hour=23, minute=0, second=0, microsecond=0)
+        schedule_utc = schedule_date_bd.astimezone(timezone.utc)
+        schedule_iso = schedule_utc.isoformat().replace("+00:00", "Z")
+        
+        print(f"INFO [Auto-Schedule]: Current BD Time is {now_bd.strftime('%Y-%m-%d %I:%M %p')}.")
+        print(f"INFO [Auto-Schedule]: Action: SCHEDULED for {schedule_date_bd.strftime('%I:%M %p')} BST (UTC ISO: {schedule_iso})")
+        return 'schedule', schedule_iso
 
 def parse_ai_output(full_text):
     metadata = {}
@@ -79,6 +105,10 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         print(f"Error: AI Text file not found at {ai_text_path}")
         return
 
+    # মোড যদি অটোমেটিক দেওয়া থাকে, তবে সময় অনুযায়ী অটো-ক্যালকুলেট হবে
+    if mode == 'auto':
+        mode, schedule_time_str = calculate_upload_schedule()
+
     with open(ai_text_path, 'r', encoding='utf-8') as f:
         ai_content = f.read()
 
@@ -89,7 +119,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         return
     client_secret_file = json_files[0]
 
-    # গিটহাব রান করার সময় কোন কোন ফোল্ডারে নতুন ভিডিও তৈরি হয়েছে তা অটোমেটিক ডিটেক্ট করবে
     for folder_name in os.listdir(base_folder):
         media_folder_path = os.path.join(base_folder, folder_name)
         if not os.path.isdir(media_folder_path) or folder_name.lower() == "summary":
@@ -97,9 +126,8 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
 
         video_file, thumbnail_file = find_media_files(media_folder_path)
         if not video_file:
-            continue # এই ফোল্ডারে নতুন কোনো ভিডিও তৈরি হয়নি
+            continue
 
-        # ভাষা শনাক্তকরণ
         lang = next((l for l, f in LANGUAGE_TO_FOLDER_MAP.items() if f == folder_name), None)
         if not lang or lang not in parsed_metadata:
             print(f"Skipping {folder_name}: No metadata found in AI text.")
@@ -125,7 +153,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
             if mode == 'schedule' and schedule_time_str:
                 body['status']['privacyStatus'] = 'private'
                 body['status']['publishAt'] = schedule_time_str
-                print(f"Scheduling video for: {schedule_time_str} UTC")
 
             media = MediaFileUpload(video_file, chunksize=-1, resumable=True)
             request = youtube_service.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
@@ -146,7 +173,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', required=True)
     parser.add_argument('--ai_text', required=True)
-    parser.add_argument('--mode', choices=['now', 'schedule'], default='now')
+    # মোড অপশনে 'auto' যুক্ত করা হয়েছে এবং এটিকে ডিফল্ট করা হয়েছে
+    parser.add_argument('--mode', choices=['now', 'schedule', 'auto'], default='auto')
     parser.add_argument('--schedule_time', default=None)
     args = parser.parse_args()
 
