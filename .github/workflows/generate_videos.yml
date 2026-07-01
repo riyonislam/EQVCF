@@ -58,10 +58,11 @@ jobs:
     - name: Run YouTube Auto Uploader
       run: |
         echo "Uploading newly created videos to YouTube channels..."
+        # এখানে --mode auto অপশন ব্যবহার করা হয়েছে
         python cli_uploader.py \
           --input ./Workspace \
           --ai_text ./Workspace/ai_output.txt \
-          --mode now
+          --mode auto
 
     - name: Upload (Sync) Videos back to Google Drive
       run: |
