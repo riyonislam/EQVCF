@@ -1,0 +1,57 @@
+name: Generate Videos
+
+on:
+  workflow_dispatch:  # GitHub-এর Actions ট্যাব থেকে এটি ম্যানুয়ালি রান করতে পারবেন
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies (FFMPEG)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
+    - name: Install Python Libraries
+      run: |
+        pip install -r requirements.txt
+
+    - name: Setup Rclone
+      uses: gacts/install-rclone@v1
+
+    - name: Apply Rclone Configuration
+      env:
+        RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+      run: |
+        mkdir -p ~/.config/rclone
+        echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+    - name: Pull Input Folders from Google Drive
+      run: |
+        echo "Downloading files from Google Drive (All Folders)..."
+        mkdir -p Workspace
+        rclone copy "gdrive:All Folders" ./Workspace/ --verbose
+
+    - name: Run Auto Video Creator Python Script
+      run: |
+        echo "Starting Video Generation Process..."
+        python cli_video_creator.py \
+          --input ./Workspace \
+          --viz_white ./assets/Spectrum-unscreen.gif \
+          --viz_black ./assets/Spectrum-black.gif \
+          --workers 4
+
+    - name: Upload (Sync) Videos back to Google Drive
+      run: |
+        echo "Uploading output videos back to Google Drive (All Folders)..."
+        # এটি কেবল তৈরি হওয়া নতুন mp4 ভিডিওগুলোকে আবার ড্রাইভের নির্দিষ্ট ফোল্ডারগুলোর ভেতরেই আপলোড করে দেবে। 
+        rclone copy ./Workspace/ "gdrive:All Folders" --include "*.mp4" --verbose
