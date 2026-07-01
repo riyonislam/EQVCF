@@ -1,4 +1,4 @@
-name: Generate Videos
+name: Generate and Upload Videos
 
 on:
   workflow_dispatch:  
@@ -42,12 +42,26 @@ jobs:
     - name: Run Auto Video Creator Python Script
       run: |
         echo "Starting Video Generation Process..."
-        # এখানে পুনরায় ./assets/ যোগ করে দেওয়া হয়েছে
         python cli_video_creator.py \
           --input ./Workspace \
           --viz_white ./assets/Spectrum-unscreen.gif \
           --viz_black ./assets/Spectrum-black.gif \
           --workers 4
+
+    - name: Setup YouTube Credentials
+      env:
+        YT_CREDS_ZIP_B64: ${{ secrets.YT_CREDS_ZIP_B64 }}
+      run: |
+        echo "$YT_CREDS_ZIP_B64" | base64 --decode > yt_auth.zip
+        unzip -o yt_auth.zip
+
+    - name: Run YouTube Auto Uploader
+      run: |
+        echo "Uploading newly created videos to YouTube channels..."
+        python cli_uploader.py \
+          --input ./Workspace \
+          --ai_text ./Workspace/ai_output.txt \
+          --mode now
 
     - name: Upload (Sync) Videos back to Google Drive
       run: |
