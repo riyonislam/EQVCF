@@ -63,8 +63,3 @@ jobs:
           --input ./Workspace \
           --ai_text ./Workspace/ai_output.txt \
           --mode auto
-
-    - name: Upload (Sync) Videos back to Google Drive
-      run: |
-        echo "Uploading output videos back to Google Drive (All Folders)..."
-        rclone copy ./Workspace/ "gdrive:All Folders" --include "*.mp4" --verbose
