@@ -48,17 +48,34 @@ jobs:
           --viz_black ./assets/Spectrum-black.gif \
           --workers 4
 
-    - name: Setup YouTube Credentials
-      env:
-        YT_CREDS_ZIP_B64: ${{ secrets.YT_CREDS_ZIP_B64 }}
-      run: |
-        echo "$YT_CREDS_ZIP_B64" | base64 --decode > yt_auth.zip
-        unzip -o yt_auth.zip
-
     - name: Run YouTube Auto Uploader
+      # প্রতিটি ভাষা এবং ক্লায়েন্ট সিক্রেটের ভ্যারিয়েবল গিটহাব থেকে সরাসরি পাইথনে পাঠানো হচ্ছে
+      env:
+        YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+        YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+        REFRESH_TOKEN_EN: ${{ secrets.REFRESH_TOKEN_EN }}
+        REFRESH_TOKEN_SUM: ${{ secrets.REFRESH_TOKEN_SUM }}
+        REFRESH_TOKEN_DE: ${{ secrets.REFRESH_TOKEN_DE }}
+        REFRESH_TOKEN_NL: ${{ secrets.REFRESH_TOKEN_NL }}
+        REFRESH_TOKEN_BN: ${{ secrets.REFRESH_TOKEN_BN }}
+        REFRESH_TOKEN_HI: ${{ secrets.REFRESH_TOKEN_HI }}
+        REFRESH_TOKEN_AR: ${{ secrets.REFRESH_TOKEN_AR }}
+        REFRESH_TOKEN_ZH: ${{ secrets.REFRESH_TOKEN_ZH }}
+        REFRESH_TOKEN_JA: ${{ secrets.REFRESH_TOKEN_JA }}
+        REFRESH_TOKEN_RU: ${{ secrets.REFRESH_TOKEN_RU }}
+        REFRESH_TOKEN_TR: ${{ secrets.REFRESH_TOKEN_TR }}
+        REFRESH_TOKEN_PL: ${{ secrets.REFRESH_TOKEN_PL }}
+        REFRESH_TOKEN_PT: ${{ secrets.REFRESH_TOKEN_PT }}
+        REFRESH_TOKEN_ID: ${{ secrets.REFRESH_TOKEN_ID }}
+        REFRESH_TOKEN_KO: ${{ secrets.REFRESH_TOKEN_KO }}
+        REFRESH_TOKEN_IT: ${{ secrets.REFRESH_TOKEN_IT }}
+        REFRESH_TOKEN_EL: ${{ secrets.REFRESH_TOKEN_EL }}
+        REFRESH_TOKEN_VI: ${{ secrets.REFRESH_TOKEN_VI }}
+        REFRESH_TOKEN_FR: ${{ secrets.REFRESH_TOKEN_FR }}
+        REFRESH_TOKEN_ES: ${{ secrets.REFRESH_TOKEN_ES }}
+        REFRESH_TOKEN_NO: ${{ secrets.REFRESH_TOKEN_NO }}
       run: |
         echo "Uploading newly created videos to YouTube channels..."
-        # এখানে --mode auto অপশন ব্যবহার করা হয়েছে
         python cli_uploader.py \
           --input ./Workspace \
           --ai_text ./Workspace/ai_output.txt \
