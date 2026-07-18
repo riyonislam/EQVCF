@@ -2,7 +2,6 @@ import os
 import re
 import glob
 import argparse
-# timedelta এবং timezone ইম্পোর্ট করা হয়েছে টাইমজোন কনভার্সনের জন্য
 from datetime import datetime, timezone, timedelta
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -13,29 +12,44 @@ from googleapiclient.errors import HttpError
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 API_SERVICE_NAME, API_VERSION = 'youtube', 'v3'
 
-SECRETS_DIR = 'Client_Secrets'
-CREDENTIALS_DIR = 'Credentials_Storage'
-
 LANGUAGE_TO_CHANNEL_MAP = {'English':'NextRead English','Summary':'NextRead Summary','Deutsch':'NextRead Deutsch','Nederlands':'NextRead Nederlands','বাংলা':'NextRead বাংলা','हिन्दी':'NextRead हिन्दी','العربية':'NextRead العربية','中文':'NextRead 中文 (繁體)','日本語':'NextRead 日本語','Русский':'NextRead Русский','Türkçe':'NextRead Türkçe','Polski':'NextRead Polski','Português':'NextRead Português','Indonesia':'NextRead Indonesia','한국어':'NextRead 한국어','Italiano':'NextRead Italiano','ελληνικά':'NextRead ελληνικά','Tiếng Việt':'NextRead Tiếng Việt','Français':'NextRead Français','Español':'NextRead Español','Norsk':'NextRead Norsk'}
 LANGUAGE_TO_FOLDER_MAP = {'English':'English','Summary':'Summary','Deutsch':'Deutsch','Nederlands':'Nederlands','বাংলা':'বাংলা','हिन्दी':'हिन्दी','العربية':'العربية','中文':'中文','日本語':'日本語','Русский':'Русский','Türkçe':'Türkçe','Polski':'Polski','Português':'Português','Indonesia':'Indonesia','한국어':'한국어','Italiano':'Italiano','ελληνικά':'ελληνικά','Tiếng Việt':'Tiếng Việt','Français':'Français','Español':'Español','Norsk':'Norsk'}
 CHANNEL_TO_ACCOUNT_MAP = {'NextRead English':'main_en','NextRead Summary':'main_sum','NextRead Deutsch':'main_de','NextRead Nederlands':'main_nl','NextRead বাংলা':'main_bn','NextRead हिन्दी':'main_hi','NextRead العربية':'main_ar','NextRead 中文 (繁體)':'main_zh','NextRead 日本語':'main_ja','NextRead Русский':'main_ru','NextRead Türkçe':'main_tr','NextRead Polski':'main_pl','NextRead Português':'main_pt','NextRead Indonesia':'main_id','NextRead 한국어':'main_ko','NextRead Italiano':'main_it','NextRead ελληνικά':'main_el','NextRead Tiếng Việt':'main_vi','NextRead Français':'france_spain_fr','NextRead Español':'france_spain_es','NextRead Norsk':'norway_no'}
 
+# অ্যাকাউন্ট কি থেকে গিটহাব এনভায়রনমেন্ট ভ্যারিয়েবলের নামের ম্যাপিং
+ACCOUNT_TO_ENV_MAP = {
+    'main_en': 'REFRESH_TOKEN_EN',
+    'main_sum': 'REFRESH_TOKEN_SUM',
+    'main_de': 'REFRESH_TOKEN_DE',
+    'main_nl': 'REFRESH_TOKEN_NL',
+    'main_bn': 'REFRESH_TOKEN_BN',
+    'main_hi': 'REFRESH_TOKEN_HI',
+    'main_ar': 'REFRESH_TOKEN_AR',
+    'main_zh': 'REFRESH_TOKEN_ZH',
+    'main_ja': 'REFRESH_TOKEN_JA',
+    'main_ru': 'REFRESH_TOKEN_RU',
+    'main_tr': 'REFRESH_TOKEN_TR',
+    'main_pl': 'REFRESH_TOKEN_PL',
+    'main_pt': 'REFRESH_TOKEN_PT',
+    'main_id': 'REFRESH_TOKEN_ID',
+    'main_ko': 'REFRESH_TOKEN_KO',
+    'main_it': 'REFRESH_TOKEN_IT',
+    'main_el': 'REFRESH_TOKEN_EL',
+    'main_vi': 'REFRESH_TOKEN_VI',
+    'france_spain_fr': 'REFRESH_TOKEN_FR',
+    'france_spain_es': 'REFRESH_TOKEN_ES',
+    'norway_no': 'REFRESH_TOKEN_NO'
+}
+
 def calculate_upload_schedule():
-    """
-    বাংলাদেশি সময় অনুযায়ী শিডিউল হিসাব করার স্বয়ংক্রিয় লজিক
-    """
-    # গিটহাব সার্ভারের বর্তমান UTC সময় নেওয়া
     now_utc = datetime.now(timezone.utc)
-    # বাংলাদেশ টাইমজোনে (UTC+6) রূপান্তর করা
     bd_tz = timezone(timedelta(hours=6))
     now_bd = now_utc.astimezone(bd_tz)
     current_bd_hour = now_bd.hour
 
-    # রাত ১১টা থেকে ১২টার মধ্যে হলে (Hour ২৩) তাৎক্ষণিক পাবলিশ
     if current_bd_hour == 23:
         print("INFO [Auto-Schedule]: Current BD Time is between 11:00 PM and 12:00 AM. Mode: PUBLISH NOW.")
         return 'now', None
-    # অন্য যেকোনো সময় হলে আজকের দিনেই রাত ১১টায় শিডিউল (যা UTC বিকাল ৫:০০ টা)
     else:
         schedule_date_bd = now_bd.replace(hour=23, minute=0, second=0, microsecond=0)
         schedule_utc = schedule_date_bd.astimezone(timezone.utc)
@@ -70,22 +84,30 @@ def parse_ai_output(full_text):
             print(f"Error parsing metadata for {lang_key}: {e}")
     return metadata
 
-def get_authenticated_service(account_key, client_secret_file):
-    credentials_path = os.path.join(CREDENTIALS_DIR, f'credentials_{account_key}.json')
-    if os.path.exists(credentials_path):
-        credentials = Credentials.from_authorized_user_file(credentials_path, SCOPES)
-    else:
-        raise FileNotFoundError(f"Credentials not found for {account_key}")
+def get_authenticated_service_env(account_key):
+    """
+    গিটহাব সিক্রেট (Environment Variables) থেকে টোকেন পড়ে অথেনটিকেশন করার পদ্ধতি
+    """
+    client_id = os.environ.get('YT_CLIENT_ID')
+    client_secret = os.environ.get('YT_CLIENT_SECRET')
+    
+    env_var_name = ACCOUNT_TO_ENV_MAP.get(account_key)
+    refresh_token = os.environ.get(env_var_name)
+    
+    if not all([client_id, client_secret, refresh_token]):
+        raise ValueError(f"Error: Missing auth secrets for '{account_key}'. Ensure YT_CLIENT_ID, YT_CLIENT_SECRET, and {env_var_name} are configured in GitHub Secrets.")
         
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            print(f"Refreshing credentials for '{account_key}'...")
-            credentials.refresh(Request())
-            with open(credentials_path, 'w') as f:
-                f.write(credentials.to_json())
-        else:
-            raise Exception(f"OAuth credentials for {account_key} expired/invalid.")
-            
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=SCOPES
+    )
+    
+    # টোকেন সচল আছে কি না তা রিফ্রেশ করে নিশ্চিত করা
+    credentials.refresh(Request())
     return build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
 
 def find_media_files(folder_path):
@@ -105,7 +127,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         print(f"Error: AI Text file not found at {ai_text_path}")
         return
 
-    # মোড যদি অটোমেটিক দেওয়া থাকে, তবে সময় অনুযায়ী অটো-ক্যালকুলেট হবে
     if mode == 'auto':
         mode, schedule_time_str = calculate_upload_schedule()
 
@@ -113,11 +134,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         ai_content = f.read()
 
     parsed_metadata = parse_ai_output(ai_content)
-    json_files = glob.glob(os.path.join(SECRETS_DIR, '*.json'))
-    if not json_files:
-        print("Fatal Error: No client secrets JSON found.")
-        return
-    client_secret_file = json_files[0]
 
     for folder_name in os.listdir(base_folder):
         media_folder_path = os.path.join(base_folder, folder_name)
@@ -139,7 +155,8 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
 
         print(f"\n>>> Uploading to Channel: {channel_name} (Lang: {lang}) <<<")
         try:
-            youtube_service = get_authenticated_service(account_key, client_secret_file)
+            # নতুন এনভায়রনমেন্ট অথেনটিকেশন ফাংশন কল করা হয়েছে
+            youtube_service = get_authenticated_service_env(account_key)
             body = {
                 'snippet': {
                     'title': metadata['title'],
@@ -173,7 +190,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', required=True)
     parser.add_argument('--ai_text', required=True)
-    # মোড অপশনে 'auto' যুক্ত করা হয়েছে এবং এটিকে ডিফল্ট করা হয়েছে
     parser.add_argument('--mode', choices=['now', 'schedule', 'auto'], default='auto')
     parser.add_argument('--schedule_time', default=None)
     args = parser.parse_args()
