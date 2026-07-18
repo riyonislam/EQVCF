@@ -16,7 +16,6 @@ LANGUAGE_TO_CHANNEL_MAP = {'English':'NextRead English','Summary':'NextRead Summ
 LANGUAGE_TO_FOLDER_MAP = {'English':'English','Summary':'Summary','Deutsch':'Deutsch','Nederlands':'Nederlands','বাংলা':'বাংলা','हिन्दी':'हिन्दी','العربية':'العربية','中文':'中文','日本語':'日本語','Русский':'Русский','Türkçe':'Türkçe','Polski':'Polski','Português':'Português','Indonesia':'Indonesia','한국어':'한국어','Italiano':'Italiano','ελληνικά':'ελληνικά','Tiếng Việt':'Tiếng Việt','Français':'Français','Español':'Español','Norsk':'Norsk'}
 CHANNEL_TO_ACCOUNT_MAP = {'NextRead English':'main_en','NextRead Summary':'main_sum','NextRead Deutsch':'main_de','NextRead Nederlands':'main_nl','NextRead বাংলা':'main_bn','NextRead हिन्दी':'main_hi','NextRead العربية':'main_ar','NextRead 中文 (繁體)':'main_zh','NextRead 日本語':'main_ja','NextRead Русский':'main_ru','NextRead Türkçe':'main_tr','NextRead Polski':'main_pl','NextRead Português':'main_pt','NextRead Indonesia':'main_id','NextRead 한국어':'main_ko','NextRead Italiano':'main_it','NextRead ελληνικά':'main_el','NextRead Tiếng Việt':'main_vi','NextRead Français':'france_spain_fr','NextRead Español':'france_spain_es','NextRead Norsk':'norway_no'}
 
-# অ্যাকাউন্ট কি থেকে গিটহাব এনভায়রনমেন্ট ভ্যারিয়েবলের নামের ম্যাপিং
 ACCOUNT_TO_ENV_MAP = {
     'main_en': 'REFRESH_TOKEN_EN',
     'main_sum': 'REFRESH_TOKEN_SUM',
@@ -85,9 +84,6 @@ def parse_ai_output(full_text):
     return metadata
 
 def get_authenticated_service_env(account_key):
-    """
-    গিটহাব সিক্রেট (Environment Variables) থেকে টোকেন পড়ে অথেনটিকেশন করার পদ্ধতি
-    """
     client_id = os.environ.get('YT_CLIENT_ID')
     client_secret = os.environ.get('YT_CLIENT_SECRET')
     
@@ -97,16 +93,15 @@ def get_authenticated_service_env(account_key):
     if not all([client_id, client_secret, refresh_token]):
         raise ValueError(f"Error: Missing auth secrets for '{account_key}'. Ensure YT_CLIENT_ID, YT_CLIENT_SECRET, and {env_var_name} are configured in GitHub Secrets.")
         
+    # scopes=SCOPES প্যারামিটারটি বাদ দেওয়া হয়েছে 'invalid_scope' এরর এড়াতে
     credentials = Credentials(
         token=None,
         refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
-        client_secret=client_secret,
-        scopes=SCOPES
+        client_secret=client_secret
     )
     
-    # টোকেন সচল আছে কি না তা রিফ্রেশ করে নিশ্চিত করা
     credentials.refresh(Request())
     return build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
 
@@ -155,7 +150,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
 
         print(f"\n>>> Uploading to Channel: {channel_name} (Lang: {lang}) <<<")
         try:
-            # নতুন এনভায়রনমেন্ট অথেনটিকেশন ফাংশন কল করা হয়েছে
             youtube_service = get_authenticated_service_env(account_key)
             body = {
                 'snippet': {
