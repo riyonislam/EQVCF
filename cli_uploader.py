@@ -12,6 +12,8 @@ from googleapiclient.errors import HttpError
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 API_SERVICE_NAME, API_VERSION = 'youtube', 'v3'
 
+EXCLUDED_FOLDERS = {"summary", "thumbnail fonts", "fonts"}
+
 LANGUAGE_TO_CHANNEL_MAP = {'English':'NextRead English','Summary':'NextRead Summary','Deutsch':'NextRead Deutsch','Nederlands':'NextRead Nederlands','বাংলা':'NextRead বাংলা','हिन्दी':'NextRead हिन्दी','العربية':'NextRead العربية','中文':'NextRead 中文 (繁體)','日本語':'NextRead 日本語','Русский':'NextRead Русский','Türkçe':'NextRead Türkçe','Polski':'NextRead Polski','Português':'NextRead Português','Indonesia':'NextRead Indonesia','한국어':'NextRead 한국어','Italiano':'NextRead Italiano','ελληνικά':'NextRead ελληνικά','Tiếng Việt':'NextRead Tiếng Việt','Français':'NextRead Français','Español':'NextRead Español','Norsk':'NextRead Norsk'}
 LANGUAGE_TO_FOLDER_MAP = {'English':'English','Summary':'Summary','Deutsch':'Deutsch','Nederlands':'Nederlands','বাংলা':'বাংলা','हिन्दी':'हिन्दी','العربية':'العربية','中文':'中文','日本語':'日本語','Русский':'Русский','Türkçe':'Türkçe','Polski':'Polski','Português':'Português','Indonesia':'Indonesia','한국어':'한국어','Italiano':'Italiano','ελληνικά':'ελληνικά','Tiếng Việt':'Tiếng Việt','Français':'Français','Español':'Español','Norsk':'Norsk'}
 CHANNEL_TO_ACCOUNT_MAP = {'NextRead English':'main_en','NextRead Summary':'main_sum','NextRead Deutsch':'main_de','NextRead Nederlands':'main_nl','NextRead বাংলা':'main_bn','NextRead हिन्दी':'main_hi','NextRead العربية':'main_ar','NextRead 中文 (繁體)':'main_zh','NextRead 日本語':'main_ja','NextRead Русский':'main_ru','NextRead Türkçe':'main_tr','NextRead Polski':'main_pl','NextRead Português':'main_pt','NextRead Indonesia':'main_id','NextRead 한국어':'main_ko','NextRead Italiano':'main_it','NextRead ελληνικά':'main_el','NextRead Tiếng Việt':'main_vi','NextRead Français':'france_spain_fr','NextRead Español':'france_spain_es','NextRead Norsk':'norway_no'}
@@ -93,7 +95,6 @@ def get_authenticated_service_env(account_key):
     if not all([client_id, client_secret, refresh_token]):
         raise ValueError(f"Error: Missing auth secrets for '{account_key}'. Ensure YT_CLIENT_ID, YT_CLIENT_SECRET, and {env_var_name} are configured in GitHub Secrets.")
         
-    # scopes=SCOPES প্যারামিটারটি বাদ দেওয়া হয়েছে 'invalid_scope' এরর এড়াতে
     credentials = Credentials(
         token=None,
         refresh_token=refresh_token,
@@ -117,6 +118,27 @@ def find_media_files(folder_path):
             break
     return video_file, thumbnail_file
 
+def cleanup_media_files(base_folder):
+    print("\n--- Cleaning up images and audio from subfolders ---")
+    image_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+    audio_exts = ('.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac')
+    
+    for folder_name in os.listdir(base_folder):
+        subfolder_path = os.path.join(base_folder, folder_name)
+        # ফন্ট ফোল্ডার ও সামারি ফোল্ডার ডিলিট হওয়া থেকে নিরাপদ রাখা হচ্ছে
+        if not os.path.isdir(subfolder_path) or folder_name.lower() in EXCLUDED_FOLDERS:
+            continue
+            
+        for file in os.listdir(subfolder_path):
+            file_lower = file.lower()
+            if file_lower.endswith(image_exts) or file_lower.endswith(audio_exts):
+                target_file = os.path.join(subfolder_path, file)
+                try:
+                    os.remove(target_file)
+                    print(f"Deleted local file: {target_file}")
+                except Exception as e:
+                    print(f"Could not delete {target_file}: {e}")
+
 def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
     if not os.path.exists(ai_text_path):
         print(f"Error: AI Text file not found at {ai_text_path}")
@@ -132,7 +154,7 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
 
     for folder_name in os.listdir(base_folder):
         media_folder_path = os.path.join(base_folder, folder_name)
-        if not os.path.isdir(media_folder_path) or folder_name.lower() == "summary":
+        if not os.path.isdir(media_folder_path) or folder_name.lower() in EXCLUDED_FOLDERS:
             continue
 
         video_file, thumbnail_file = find_media_files(media_folder_path)
@@ -179,6 +201,9 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
 
         except Exception as err:
             print(f"Failed to upload for {lang}: {err}")
+
+    # শুধুমাত্র ভাষার সাব-ফোল্ডার থেকে ছবি ও অডিও ক্লিনআপ করা হচ্ছে (ফন্ট ফোল্ডার সুরক্ষিত)
+    cleanup_media_files(base_folder)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
