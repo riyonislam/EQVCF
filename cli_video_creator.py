@@ -4,6 +4,9 @@ import subprocess
 import concurrent.futures
 from PIL import Image, ImageStat
 
+# যেসব ফোল্ডারের ভিডিও তৈরি হবে না (বাদ দেওয়া হবে)
+EXCLUDED_FOLDERS = {"summary", "thumbnail fonts", "fonts"}
+
 def is_background_dark(image_path, threshold=128):
     try:
         with Image.open(image_path) as img:
@@ -75,7 +78,10 @@ def create_video_with_ffmpeg(folder_path, viz_white, viz_black):
 
 def process_videos(base_folder_path, max_workers, viz_white, viz_black):
     print(f"Scanning base folder: {base_folder_path}")
-    subfolders = sorted([f for f in os.listdir(base_folder_path) if os.path.isdir(os.path.join(base_folder_path, f)) and f.lower() != "summary"])
+    subfolders = sorted([
+        f for f in os.listdir(base_folder_path) 
+        if os.path.isdir(os.path.join(base_folder_path, f)) and f.lower() not in EXCLUDED_FOLDERS
+    ])
     folders_to_process = [os.path.join(base_folder_path, f) for f in subfolders]
 
     if not folders_to_process:
