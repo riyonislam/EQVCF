@@ -23,6 +23,12 @@ except ImportError:
     HAS_LANGDETECT = False
 
 try:
+    from fontTools.ttLib import TTFont
+    HAS_FONTTOOLS = True
+except ImportError:
+    HAS_FONTTOOLS = False
+
+try:
     HAS_RAQM = features.check_module('raqm')
 except Exception:
     HAS_RAQM = False
@@ -30,6 +36,12 @@ except Exception:
 TEXT_PANEL_START_X_RATIO = 0.46
 TARGET_MAX_SIZE_MB = 1.5
 TARGET_MAX_BYTES = int(TARGET_MAX_SIZE_MB * 1024 * 1024)
+
+# যেকোনো জনপ্রিয় ফন্ট এক্সটেনশন
+SUPPORTED_FONT_EXTENSIONS = (
+    '.ttf', '.otf', '.ttc', '.woff', '.woff2', 
+    '.dfont', '.bdf', '.pfb', '.pfa', '.suit'
+)
 
 LANGUAGE_FOLDERS = [
     'Deutsch', 'English', 'Español', 'Français', 'Indonesia',
@@ -53,6 +65,21 @@ def fix_complex_scripts(text, lang_mode):
     
     return text
 
+def convert_font_if_needed(font_path):
+    """WOFF বা WOFF2 ফরম্যাট থাকলে সেটিকে Pillow সাপোর্টেড ফরম্যাটে ডিকমপ্রেস করে"""
+    ext = os.path.splitext(font_path)[1].lower()
+    if ext in ('.woff', '.woff2') and HAS_FONTTOOLS:
+        try:
+            temp_ttf_path = font_path + ".decompressed.ttf"
+            if not os.path.exists(temp_ttf_path):
+                f = TTFont(font_path)
+                f.flavor = None
+                f.save(temp_ttf_path)
+            return temp_ttf_path
+        except Exception:
+            return font_path
+    return font_path
+
 class FontManager:
     def __init__(self, log_callback=print): 
         self.fonts_map = {}
@@ -66,12 +93,14 @@ class FontManager:
             folder_path = os.path.join(base_folder_path, lang_folder)
             if os.path.isdir(folder_path):
                 for file_name in os.listdir(folder_path):
-                    if file_name.lower().endswith(('.ttf', '.otf', '.ttc')):
-                        self.fonts_map[lang_folder] = os.path.join(folder_path, file_name)
+                    if file_name.lower().endswith(SUPPORTED_FONT_EXTENSIONS):
+                        actual_font = os.path.join(folder_path, file_name)
+                        usable_font = convert_font_if_needed(actual_font)
+                        self.fonts_map[lang_folder] = usable_font
                         break
                         
         if self.fonts_map:
-            self.log_callback(f"[+] ফন্ট লোড সফল: '{base_folder_path}' ফোল্ডার থেকে {len(self.fonts_map)} টি ভাষার ফন্ট পাওয়া গেছে।")
+            self.log_callback(f"[+] ফন্ট লোড সফল: '{base_folder_path}' থেকে {len(self.fonts_map)} টি ভাষার ফন্ট পাওয়া গেছে।")
             return True
         return False
 
@@ -211,34 +240,26 @@ def extract_slogans_from_ai_text(text):
     return slogans
 
 def extract_book_name(ai_content):
-    """ai_output.txt থেকে Book_Name: এর মান বের করে"""
     m = re.search(r"Book_Name:\s*(.*)", ai_content, re.IGNORECASE)
     if m:
         val = m.group(1).strip().strip('"').strip("'")
         val = val.splitlines()[0].strip()
-        if val:
-            return val
+        if val: return val
             
-    # ব্যাকআপ হিসেবে যদি Book_Name না লিখে সরাসরি TITLE: লেখা থাকে
     m2 = re.search(r"TITLE:\s*(.*)", ai_content, re.IGNORECASE)
     if m2:
         val = m2.group(1).strip().strip('"').strip("'")
         val = val.splitlines()[0].strip()
-        if val:
-            return val
+        if val: return val
     return ""
 
 def load_and_prepare_prompt(workspace_dir, ai_content, default_prompt):
-    """
-    Prompt.txt থেকে টেমপ্লেট নিয়ে [Book_Name] কে ai_output.txt-এর আসল নাম দিয়ে রিপ্লেস করে
-    """
     book_name = extract_book_name(ai_content)
     if book_name:
         print(f"[+] বইয়ের নাম শনাক্ত হয়েছে: '{book_name}'")
     else:
         print("[!] ai_output.txt-এ 'Book_Name:' পাওয়া যায়নি। ডিফল্ট নাম ব্যবহৃত হবে।")
 
-    # Prompt.txt ফাইলটি খোঁজা (রিপোজিটরি রুট অথবা Workspace ফোল্ডারে)
     prompt_file_candidates = [
         "Prompt.txt",
         os.path.join(workspace_dir, "Prompt.txt")
@@ -255,10 +276,9 @@ def load_and_prepare_prompt(workspace_dir, ai_content, default_prompt):
                     break
 
     if not prompt_template:
-        print("[*] Prompt.txt পাওয়া যায়নি। config.json-এর ডিফল্ট প্রম্পট ব্যবহৃত হবে।")
+        print("[*] Prompt.txt পাওয়া যায়নি। ডিফল্ট প্রম্পট ব্যবহৃত হবে।")
         prompt_template = default_prompt
 
-    # [Book_Name] বা {Book_Name} রিপ্লেসমেন্ট লজিক
     pattern = re.compile(r"\[Book_Name\]|\{Book_Name\}|<Book_Name>", re.IGNORECASE)
     if book_name:
         final_prompt = pattern.sub(book_name, prompt_template)
@@ -275,7 +295,6 @@ def generate_background_via_pollinations(prompt, output_file):
     encoded_prompt = urllib.parse.quote(clean_prompt)
     seed = random.randint(1000, 999999)
     
-    # Pollinations FLUX Engine (1920x1080 16:9)
     url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1920&height=1080&model=flux&nologo=true&seed={seed}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
@@ -288,13 +307,10 @@ def generate_background_via_pollinations(prompt, output_file):
                     f.write(res.content)
                 print(f"[+] এআই ব্যাকগ্রাউন্ড সফলভাবে তৈরি হয়েছে এবং সেভ হয়েছে: {output_file}")
                 return True
-            else:
-                print(f"    [!] স্ট্যাটাস কোড: {res.status_code}. ৫ সেকেন্ড পর রিট্রাই হবে...")
         except Exception as e:
             print(f"    [!] কানেকশন এরর: {e}")
         time.sleep(5)
 
-    # ফলব্যাক: টার্বো মডেলে একবার চেষ্টা
     try:
         print("    [!] FLUX মডেল ব্যস্ত, বিকল্প মডেলে চেষ্টা করা হচ্ছে...")
         fallback_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1920&height=1080&nologo=true&seed={seed}"
@@ -412,7 +428,6 @@ def render_thumbnail(background_image, full_text, detected_folder, font_path, ou
             spacing_to_add = spacing_1_2 if idx == 0 else spacing_subsequent
         y_cursor += line_heights[idx] + spacing_to_add
 
-    # Audiobook badge
     if appearance_settings.get('add_audiobook_text', False):
         audio_text = "Audiobook Podcast"
         try:
@@ -455,7 +470,6 @@ def main():
 
     cfg = load_configuration(args.config)
 
-    # ai_output.txt ফাইল পড়া
     ai_txt_path = os.path.join(workspace_dir, "ai_output.txt")
     ai_content = ""
     if os.path.exists(ai_txt_path):
@@ -471,7 +485,7 @@ def main():
             bg_path = candidate_path
             break
 
-    # ড্রাইভে ছবি না থাকলে Prompt.txt + [Book_Name] রিপ্লেস করে AI ব্যাকগ্রাউন্ড তৈরি
+    # ড্রাইভে ছবি না থাকলে Prompt.txt + [Book_Name] দিয়ে স্বয়ংক্রিয় এআই ব্যাকগ্রাউন্ড
     if not bg_path and cfg.get('auto_generate_background', True):
         prompt = load_and_prepare_prompt(workspace_dir, ai_content, cfg.get('default_background_prompt'))
         auto_bg_path = os.path.join(workspace_dir, "Background.png")
@@ -479,9 +493,109 @@ def main():
             bg_path = auto_bg_path
 
     if not bg_path:
-        print(f"[!] তথ্য: '{workspace_dir}' ফোল্ডারে কোনো 'Background.png' পাওয়া যায়নি এবং জেনারেটও করা যায়নি।")
-        print("    স্বয়ংক্রিয় ব্যাকগ্রাউন্ড জেনারেশন স্কিপ করা হচ্ছে।")
+        print(f"[!] তথ্য: '{workspace_dir}' ফোল্ডারে কোনো 'Background.png' পাওয়া যায়নি। স্কিপ করা হচ্ছে।")
         return
 
     print(f"[+] মূল ব্যাকগ্রাউন্ড ছবি প্রস্তুত: {bg_path}")
-   
+    try:
+        background_image = Image.open(bg_path).convert("RGBA")
+        background_image = background_image.resize((1920, 1080), Image.Resampling.LANCZOS)
+    except Exception as e:
+        print(f"[-] ব্যাকগ্রাউন্ড ছবি লোড করতে ব্যর্থ: {e}")
+        return
+
+    # ২. স্লোগান খোঁজা
+    slogans = extract_slogans_from_ai_text(ai_content)
+    print(f"[+] {len(slogans)} টি ভাষার স্লোগান পাওয়া গেছে।")
+
+    # ৩. লেআউট ও কালার সেটিংস
+    position_str = cfg.get("text_position", "Center Right").lower()
+    v_align = "Center"
+    if "top" in position_str: v_align = "Top"
+    elif "bottom" in position_str: v_align = "Bottom"
+
+    panel_location = "Right"
+    if "left" in position_str: panel_location = "Left"
+    elif "right" not in position_str: panel_location = "Center"
+
+    appearance_settings = {
+        'top_color': cfg.get('top_color', '#FFFFFF'),
+        'top_bg_color': cfg.get('top_bg_color', '#000000'),
+        'use_top_bg': bool(cfg.get('use_top_bg', False)),
+        'bottom_color': cfg.get('bottom_color', '#FFFFFF'),
+        'bottom_bg_color': cfg.get('bottom_bg_color', '#FF0000'),
+        'use_bottom_bg': bool(cfg.get('use_bottom_bg', True)),
+        'add_audiobook_text': bool(cfg.get('add_audiobook_text', True)),
+        'audiobook_color': cfg.get('audiobook_color', '#FFFFFF'),
+        'audiobook_bg_color': cfg.get('audiobook_bg_color', '#000000'),
+        'use_audiobook_bg': bool(cfg.get('use_audiobook_bg', True)),
+        'audiobook_font_size': int(cfg.get('audiobook_font_size', 45))
+    }
+
+    layout_settings = {
+        'line_spacing': int(cfg.get('line_spacing', 50)),
+        'spacing_1_2': int(cfg.get('spacing_1_2', 50)),
+        'audiobook_spacing': int(cfg.get('audiobook_spacing', 40)),
+        'v_align': v_align,
+        'panel_location': panel_location,
+        'is_compact': bool(cfg.get('is_compact', False)),
+        'use_fixed_position': bool(cfg.get('use_fixed_position', False))
+    }
+
+    # ৪. ফন্ট ফোল্ডার স্ক্যান (গুগল ড্রাইভ থেকে আসা Workspace/Thumbnail Fonts আগে চেক করবে)
+    fm = FontManager()
+    font_dirs_to_try = [
+        os.path.join(workspace_dir, "Thumbnail Fonts"),
+        os.path.join(workspace_dir, "fonts"),
+        "./Thumbnail Fonts",
+        "./fonts"
+    ]
+    if args.fonts_dir:
+        font_dirs_to_try.insert(0, args.fonts_dir)
+
+    fonts_loaded = False
+    for fdir in font_dirs_to_try:
+        if fm.scan_font_folder(fdir):
+            fonts_loaded = True
+            break
+
+    if not fonts_loaded:
+        print("[!] সতর্কতা: কোনো ফন্ট ফোল্ডার পাওয়া যায়নি। ডিফল্ট সিস্টেম ফন্ট ব্যবহৃত হবে।")
+
+    # ৫. প্রতিটি ভাষায় থাম্বনেইল তৈরি
+    success_count = 0
+    print("\n=======================================================")
+    print("      স্বয়ংক্রিয় ব্যাকগ্রাউন্ড ও থাম্বনেইল তৈরি শুরু     ")
+    print("=======================================================")
+
+    for lang in LANGUAGE_FOLDERS:
+        lang_subfolder = os.path.join(workspace_dir, lang)
+        os.makedirs(lang_subfolder, exist_ok=True)
+
+        slogan_text = slogans.get(lang)
+        if not slogan_text:
+            print(f"[-] '{lang}' এর জন্য স্লোগান পাওয়া যায়নি। স্কিপ করা হচ্ছে।")
+            continue
+
+        detected_folder, font_path = fm.get_font_file_path(lang)
+        output_file = os.path.join(lang_subfolder, "thumbnail.jpeg")
+
+        try:
+            ok = render_thumbnail(
+                background_image, slogan_text, lang, font_path,
+                output_file, appearance_settings, layout_settings
+            )
+            if ok:
+                print(f"[✓ সেভ সফল] '{lang}/thumbnail.jpeg' -> স্লোগান: \"{slogan_text}\"")
+                success_count += 1
+            else:
+                print(f"[!] '{lang}' এর জন্য থাম্বনেইল তৈরি ব্যর্থ।")
+        except Exception as err:
+            print(f"[-] '{lang}' এর থাম্বনেইল এরর: {err}")
+
+    print("\n=======================================================")
+    print(f"  থাম্বনেইল জেনারেশন সম্পন্ন: মোট {success_count}/{len(LANGUAGE_FOLDERS)} টি তৈরি হয়েছে")
+    print("=======================================================\n")
+
+if __name__ == '__main__':
+    main()
