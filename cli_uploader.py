@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import glob
 import argparse
 from datetime import datetime, timezone, timedelta
@@ -41,6 +42,24 @@ ACCOUNT_TO_ENV_MAP = {
     'france_spain_es': 'REFRESH_TOKEN_ES',
     'norway_no': 'REFRESH_TOKEN_NO'
 }
+
+def load_channels_config(config_path="channels_config.json"):
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not read {config_path}: {e}")
+    return {}
+
+def is_channel_enabled(channel_name, lang_folder, channels_cfg):
+    if not channels_cfg:
+        return True
+    if channel_name in channels_cfg:
+        return bool(channels_cfg[channel_name])
+    if lang_folder in channels_cfg:
+        return bool(channels_cfg[lang_folder])
+    return True
 
 def calculate_upload_schedule():
     now_utc = datetime.now(timezone.utc)
@@ -125,7 +144,6 @@ def cleanup_media_files(base_folder):
     
     for folder_name in os.listdir(base_folder):
         subfolder_path = os.path.join(base_folder, folder_name)
-        # ফন্ট ফোল্ডার ও সামারি ফোল্ডার ডিলিট হওয়া থেকে নিরাপদ রাখা হচ্ছে
         if not os.path.isdir(subfolder_path) or folder_name.lower() in EXCLUDED_FOLDERS:
             continue
             
@@ -139,10 +157,12 @@ def cleanup_media_files(base_folder):
                 except Exception as e:
                     print(f"Could not delete {target_file}: {e}")
 
-def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
+def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None, channels_config_path="channels_config.json"):
     if not os.path.exists(ai_text_path):
         print(f"Error: AI Text file not found at {ai_text_path}")
         return
+
+    channels_cfg = load_channels_config(channels_config_path)
 
     if mode == 'auto':
         mode, schedule_time_str = calculate_upload_schedule()
@@ -157,17 +177,22 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         if not os.path.isdir(media_folder_path) or folder_name.lower() in EXCLUDED_FOLDERS:
             continue
 
+        lang = next((l for l, f in LANGUAGE_TO_FOLDER_MAP.items() if f == folder_name), None)
+        channel_name = LANGUAGE_TO_CHANNEL_MAP.get(lang, folder_name)
+
+        if not is_channel_enabled(channel_name, folder_name, channels_cfg):
+            print(f"Skipping {channel_name}: Channel is disabled (False) in channels_config.json.")
+            continue
+
         video_file, thumbnail_file = find_media_files(media_folder_path)
         if not video_file:
             continue
 
-        lang = next((l for l, f in LANGUAGE_TO_FOLDER_MAP.items() if f == folder_name), None)
         if not lang or lang not in parsed_metadata:
             print(f"Skipping {folder_name}: No metadata found in AI text.")
             continue
 
         metadata = parsed_metadata[lang]
-        channel_name = LANGUAGE_TO_CHANNEL_MAP.get(lang)
         account_key = CHANNEL_TO_ACCOUNT_MAP.get(channel_name)
 
         print(f"\n>>> Uploading to Channel: {channel_name} (Lang: {lang}) <<<")
@@ -202,7 +227,6 @@ def run_uploader(base_folder, ai_text_path, mode, schedule_time_str=None):
         except Exception as err:
             print(f"Failed to upload for {lang}: {err}")
 
-    # শুধুমাত্র ভাষার সাব-ফোল্ডার থেকে ছবি ও অডিও ক্লিনআপ করা হচ্ছে (ফন্ট ফোল্ডার সুরক্ষিত)
     cleanup_media_files(base_folder)
 
 if __name__ == "__main__":
@@ -211,6 +235,7 @@ if __name__ == "__main__":
     parser.add_argument('--ai_text', required=True)
     parser.add_argument('--mode', choices=['now', 'schedule', 'auto'], default='auto')
     parser.add_argument('--schedule_time', default=None)
+    parser.add_argument('--channels_config', default='channels_config.json')
     args = parser.parse_args()
 
-    run_uploader(args.input, args.ai_text, args.mode, args.schedule_time)
+    run_uploader(args.input, args.ai_text, args.mode, args.schedule_time, args.channels_config)
