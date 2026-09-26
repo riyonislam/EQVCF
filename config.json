@@ -2,21 +2,21 @@
   "auto_generate_background": true,
   "default_background_prompt": "A cinematic dark aesthetic scene, open glowing book on a wooden desk, soft ambient lighting, library atmosphere, professional photography, hyperrealistic, 8k, photorealistic",
 
-  "top_color": "#FFFFFF",
+  "top_color": "#ebff00",
   "use_top_bg": false,
   "top_bg_color": "#000000",
 
   "bottom_color": "#FFFFFF",
-  "use_bottom_bg": true,
+  "use_bottom_bg": false,
   "bottom_bg_color": "#FF0000",
 
   "text_position": "Center Right",
-  "use_fixed_position": false,
+  "use_fixed_position": true,
   "is_compact": false,
   "spacing_1_2": 50,
   "line_spacing": 50,
 
-  "add_audiobook_text": true,
+  "add_audiobook_text": false,
   "audiobook_color": "#FFFFFF",
   "use_audiobook_bg": true,
   "audiobook_bg_color": "#000000",
