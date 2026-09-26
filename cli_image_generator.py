@@ -37,7 +37,6 @@ TEXT_PANEL_START_X_RATIO = 0.46
 TARGET_MAX_SIZE_MB = 1.5
 TARGET_MAX_BYTES = int(TARGET_MAX_SIZE_MB * 1024 * 1024)
 
-# যেকোনো জনপ্রিয় ফন্ট এক্সটেনশন
 SUPPORTED_FONT_EXTENSIONS = (
     '.ttf', '.otf', '.ttc', '.woff', '.woff2', 
     '.dfont', '.bdf', '.pfb', '.pfa', '.suit'
@@ -49,6 +48,48 @@ LANGUAGE_FOLDERS = [
     'Tiếng Việt', 'Türkçe', 'ελληνικά', 'Русский', 'العربية',
     'हिन्दी', 'বাংলা', '한국어', '中文', '日本語'
 ]
+
+FOLDER_TO_CHANNEL = {
+    'English': 'NextRead English',
+    'Deutsch': 'NextRead Deutsch',
+    'Nederlands': 'NextRead Nederlands',
+    'বাংলা': 'NextRead বাংলা',
+    'हिन्दी': 'NextRead हिन्दी',
+    'العربية': 'NextRead العربية',
+    '中文': 'NextRead 中文 (繁體)',
+    '日本語': 'NextRead 日本語',
+    'Русский': 'NextRead Русский',
+    'Türkçe': 'NextRead Türkçe',
+    'Polski': 'NextRead Polski',
+    'Português': 'NextRead Português',
+    'Indonesia': 'NextRead Indonesia',
+    '한국어': 'NextRead 한국어',
+    'Italiano': 'NextRead Italiano',
+    'ελληνικά': 'NextRead ελληνικά',
+    'Tiếng Việt': 'NextRead Tiếng Việt',
+    'Français': 'NextRead Français',
+    'Español': 'NextRead Español',
+    'Norsk': 'NextRead Norsk'
+}
+
+def load_channels_config(config_path="channels_config.json"):
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not read {config_path}: {e}")
+    return {}
+
+def is_channel_enabled(folder_name, channels_cfg):
+    if not channels_cfg:
+        return True
+    ch_name = FOLDER_TO_CHANNEL.get(folder_name, folder_name)
+    if ch_name in channels_cfg:
+        return bool(channels_cfg[ch_name])
+    if folder_name in channels_cfg:
+        return bool(channels_cfg[folder_name])
+    return True
 
 def fix_complex_scripts(text, lang_mode):
     if not HAS_RAQM:
@@ -66,7 +107,6 @@ def fix_complex_scripts(text, lang_mode):
     return text
 
 def convert_font_if_needed(font_path):
-    """WOFF বা WOFF2 ফরম্যাট থাকলে সেটিকে Pillow সাপোর্টেড ফরম্যাটে ডিকমপ্রেস করে"""
     ext = os.path.splitext(font_path)[1].lower()
     if ext in ('.woff', '.woff2') and HAS_FONTTOOLS:
         try:
@@ -208,8 +248,8 @@ def extract_slogans_from_ai_text(text):
     for match in pattern.finditer(text):
         lang_key = match.group(1).strip()
         content = match.group(2)
-        if lang_key == "中文 (繁體)": lang_key = "中文"
-        if lang_key == "Bahasa Indonesia": lang_key = "Indonesia"
+        if "中文" in lang_key: lang_key = "中文"
+        if "Indonesia" in lang_key: lang_key = "Indonesia"
         
         slogan_m = re.search(r"THUMBNAIL SLOGAN:\s*(.*)", content, re.IGNORECASE)
         if slogan_m:
@@ -226,14 +266,18 @@ def extract_slogans_from_ai_text(text):
             if not slogan_text or pre_colon.upper() in ["TITLE", "DESCRIPTION", "TAGS", "BOOK_NAME", "IMAGE PROMPT", "BACKGROUND PROMPT"]:
                 continue
             
-            match = re.search(r'\((.*?)\)', pre_colon)
-            extracted_key = match.group(1).strip() if match else pre_colon
-            extracted_key = extracted_key.replace("NextRead", "").strip()
-            if "中文" in extracted_key: extracted_key = "中文"
-            elif "Indonesia" in extracted_key: extracted_key = "Indonesia"
+            # ফিক্স: যদি লাইনে '中文' থাকে তাহলে সরাসরি '中文' ফোল্ডারে যাবে
+            if "中文" in pre_colon:
+                extracted_key = "中文"
+            elif "Indonesia" in pre_colon:
+                extracted_key = "Indonesia"
+            else:
+                match = re.search(r'\((.*?)\)', pre_colon)
+                extracted_key = match.group(1).strip() if match else pre_colon
+                extracted_key = extracted_key.replace("NextRead", "").strip()
                 
             for kl in LANGUAGE_FOLDERS:
-                if kl.lower() == extracted_key.lower() or kl.lower() in extracted_key.lower():
+                if kl.lower() == extracted_key.lower() or kl.lower() in extracted_key.lower() or extracted_key.lower() in kl.lower():
                     slogans[kl] = slogan_text
                     break
                     
@@ -461,6 +505,7 @@ def main():
     parser.add_argument("--workspace", default="./Workspace", help="Workspace folder")
     parser.add_argument("--config", default="./config.json", help="Path to config.json")
     parser.add_argument("--fonts_dir", default=None, help="Directory containing fonts")
+    parser.add_argument("--channels_config", default="channels_config.json", help="Path to channels_config.json")
     args = parser.parse_args()
 
     workspace_dir = os.path.abspath(args.workspace)
@@ -469,6 +514,7 @@ def main():
         return
 
     cfg = load_configuration(args.config)
+    channels_cfg = load_channels_config(args.channels_config)
 
     ai_txt_path = os.path.join(workspace_dir, "ai_output.txt")
     ai_content = ""
@@ -542,7 +588,7 @@ def main():
         'use_fixed_position': bool(cfg.get('use_fixed_position', False))
     }
 
-    # ৪. ফন্ট ফোল্ডার স্ক্যান (গুগল ড্রাইভ থেকে আসা Workspace/Thumbnail Fonts আগে চেক করবে)
+    # ৪. ফন্ট ফোল্ডার স্ক্যান
     fm = FontManager()
     font_dirs_to_try = [
         os.path.join(workspace_dir, "Thumbnail Fonts"),
@@ -572,6 +618,10 @@ def main():
         lang_subfolder = os.path.join(workspace_dir, lang)
         os.makedirs(lang_subfolder, exist_ok=True)
 
+        if not is_channel_enabled(lang, channels_cfg):
+            print(f"[-] '{lang}' চ্যানেলটি channels_config.json-এ বন্ধ (False)। থাম্বনেইল তৈরি স্কিপ করা হলো।")
+            continue
+
         slogan_text = slogans.get(lang)
         if not slogan_text:
             print(f"[-] '{lang}' এর জন্য স্লোগান পাওয়া যায়নি। স্কিপ করা হচ্ছে।")
@@ -594,7 +644,7 @@ def main():
             print(f"[-] '{lang}' এর থাম্বনেইল এরর: {err}")
 
     print("\n=======================================================")
-    print(f"  থাম্বনেইল জেনারেশন সম্পন্ন: মোট {success_count}/{len(LANGUAGE_FOLDERS)} টি তৈরি হয়েছে")
+    print(f"  থাম্বনেইল জেনারেশন সম্পন্ন: মোট {success_count} টি তৈরি হয়েছে")
     print("=======================================================\n")
 
 if __name__ == '__main__':
