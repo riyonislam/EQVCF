@@ -1,82 +1,106 @@
 name: Generate and Upload Videos
 
 on:
-  workflow_dispatch:  
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Install System Dependencies (FFMPEG & Rclone)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
-        curl https://rclone.org/install.sh | sudo bash
+      - name: Install System Dependencies (FFMPEG, Rclone, Libraqm & Fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libraqm-dev libraqm0 fonts-noto-cjk fonts-noto-core fonts-deva fonts-beng
+          curl https://rclone.org/install.sh | sudo bash
 
-    - name: Install Python Libraries
-      run: |
-        pip install -r requirements.txt
+      - name: Install Python Libraries
+        run: |
+          pip install -r requirements.txt
 
-    - name: Apply Rclone Configuration
-      env:
-        RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
-      run: |
-        mkdir -p ~/.config/rclone
-        echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+      - name: Apply Rclone Configuration
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
 
-    - name: Pull Input Folders from Google Drive
-      run: |
-        echo "Downloading files from Google Drive (All Folders)..."
-        mkdir -p Workspace
-        rclone copy "gdrive:All Folders" ./Workspace/ --verbose
+      - name: Pull Input Folders from Google Drive
+        run: |
+          echo "Downloading files from Google Drive (All Folders)..."
+          mkdir -p Workspace
+          rclone copy "gdrive:All Folders" ./Workspace/ --verbose
 
-    - name: Run Auto Video Creator Python Script
-      run: |
-        echo "Starting Video Generation Process..."
-        python cli_video_creator.py \
-          --input ./Workspace \
-          --viz_white ./assets/Spectrum-unscreen.gif \
-          --viz_black ./assets/Spectrum-black.gif \
-          --workers 4
+      - name: Generate Thumbnails from Background Image
+        run: |
+          echo "Generating language thumbnails based on Prompt.txt and config.json..."
+          python cli_image_generator.py \
+            --workspace ./Workspace \
+            --config ./config.json
 
-    - name: Run YouTube Auto Uploader
-      # প্রতিটি ভাষা এবং ক্লায়েন্ট সিক্রেটের ভ্যারিয়েবল গিটহাব থেকে সরাসরি পাইথনে পাঠানো হচ্ছে
-      env:
-        YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-        YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-        REFRESH_TOKEN_EN: ${{ secrets.REFRESH_TOKEN_EN }}
-        REFRESH_TOKEN_SUM: ${{ secrets.REFRESH_TOKEN_SUM }}
-        REFRESH_TOKEN_DE: ${{ secrets.REFRESH_TOKEN_DE }}
-        REFRESH_TOKEN_NL: ${{ secrets.REFRESH_TOKEN_NL }}
-        REFRESH_TOKEN_BN: ${{ secrets.REFRESH_TOKEN_BN }}
-        REFRESH_TOKEN_HI: ${{ secrets.REFRESH_TOKEN_HI }}
-        REFRESH_TOKEN_AR: ${{ secrets.REFRESH_TOKEN_AR }}
-        REFRESH_TOKEN_ZH: ${{ secrets.REFRESH_TOKEN_ZH }}
-        REFRESH_TOKEN_JA: ${{ secrets.REFRESH_TOKEN_JA }}
-        REFRESH_TOKEN_RU: ${{ secrets.REFRESH_TOKEN_RU }}
-        REFRESH_TOKEN_TR: ${{ secrets.REFRESH_TOKEN_TR }}
-        REFRESH_TOKEN_PL: ${{ secrets.REFRESH_TOKEN_PL }}
-        REFRESH_TOKEN_PT: ${{ secrets.REFRESH_TOKEN_PT }}
-        REFRESH_TOKEN_ID: ${{ secrets.REFRESH_TOKEN_ID }}
-        REFRESH_TOKEN_KO: ${{ secrets.REFRESH_TOKEN_KO }}
-        REFRESH_TOKEN_IT: ${{ secrets.REFRESH_TOKEN_IT }}
-        REFRESH_TOKEN_EL: ${{ secrets.REFRESH_TOKEN_EL }}
-        REFRESH_TOKEN_VI: ${{ secrets.REFRESH_TOKEN_VI }}
-        REFRESH_TOKEN_FR: ${{ secrets.REFRESH_TOKEN_FR }}
-        REFRESH_TOKEN_ES: ${{ secrets.REFRESH_TOKEN_ES }}
-        REFRESH_TOKEN_NO: ${{ secrets.REFRESH_TOKEN_NO }}
-      run: |
-        echo "Uploading newly created videos to YouTube channels..."
-        python cli_uploader.py \
-          --input ./Workspace \
-          --ai_text ./Workspace/ai_output.txt \
-          --mode auto
+      - name: Generate Audio via NotebookLM
+        env:
+          COOKIES_POOL_JSON: ${{ secrets.COOKIES_POOL_JSON }}
+        run: |
+          echo "Starting NotebookLM Multi-Language Audio Generation..."
+          python cli_notebooklm_audio.py --workspace ./Workspace
+
+      - name: Backup Audio Files to Google Drive
+        run: |
+          echo "Backing up newly generated audio files to Google Drive..."
+          rclone copy ./Workspace "gdrive:All Folders" --include "*.mp3" --include "*.m4a" --verbose
+
+      - name: Run Auto Video Creator Python Script
+        run: |
+          echo "Starting Video Generation Process..."
+          python cli_video_creator.py \
+            --input ./Workspace \
+            --viz_white ./assets/Spectrum-unscreen.gif \
+            --viz_black ./assets/Spectrum-black.gif \
+            --workers 4
+
+      - name: Run YouTube Auto Uploader
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          REFRESH_TOKEN_EN: ${{ secrets.REFRESH_TOKEN_EN }}
+          REFRESH_TOKEN_SUM: ${{ secrets.REFRESH_TOKEN_SUM }}
+          REFRESH_TOKEN_DE: ${{ secrets.REFRESH_TOKEN_DE }}
+          REFRESH_TOKEN_NL: ${{ secrets.REFRESH_TOKEN_NL }}
+          REFRESH_TOKEN_BN: ${{ secrets.REFRESH_TOKEN_BN }}
+          REFRESH_TOKEN_HI: ${{ secrets.REFRESH_TOKEN_HI }}
+          REFRESH_TOKEN_AR: ${{ secrets.REFRESH_TOKEN_AR }}
+          REFRESH_TOKEN_ZH: ${{ secrets.REFRESH_TOKEN_ZH }}
+          REFRESH_TOKEN_JA: ${{ secrets.REFRESH_TOKEN_JA }}
+          REFRESH_TOKEN_RU: ${{ secrets.REFRESH_TOKEN_RU }}
+          REFRESH_TOKEN_TR: ${{ secrets.REFRESH_TOKEN_TR }}
+          REFRESH_TOKEN_PL: ${{ secrets.REFRESH_TOKEN_PL }}
+          REFRESH_TOKEN_PT: ${{ secrets.REFRESH_TOKEN_PT }}
+          REFRESH_TOKEN_ID: ${{ secrets.REFRESH_TOKEN_ID }}
+          REFRESH_TOKEN_KO: ${{ secrets.REFRESH_TOKEN_KO }}
+          REFRESH_TOKEN_IT: ${{ secrets.REFRESH_TOKEN_IT }}
+          REFRESH_TOKEN_EL: ${{ secrets.REFRESH_TOKEN_EL }}
+          REFRESH_TOKEN_VI: ${{ secrets.REFRESH_TOKEN_VI }}
+          REFRESH_TOKEN_FR: ${{ secrets.REFRESH_TOKEN_FR }}
+          REFRESH_TOKEN_ES: ${{ secrets.REFRESH_TOKEN_ES }}
+          REFRESH_TOKEN_NO: ${{ secrets.REFRESH_TOKEN_NO }}
+        run: |
+          echo "Uploading newly created videos to YouTube channels..."
+          python cli_uploader.py \
+            --input ./Workspace \
+            --ai_text ./Workspace/ai_output.txt \
+            --mode auto
+
+      - name: Clean up Images and Audio from Google Drive
+        if: success()
+        run: |
+          echo "Deleting image and audio files from Google Drive subfolders..."
+          rclone delete "gdrive:All Folders" --include "*.mp3" --include "*.m4a" --include "*.wav" --include "*.png" --include "*.jpg" --include "*.jpeg" --verbose
