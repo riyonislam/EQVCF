@@ -9,29 +9,49 @@ import argparse
 import subprocess
 
 LANGUAGE_CONFIG = [
-    {"name": "Deutsch", "folder": "Deutsch", "code": "de", "prompt_lang": "German"},
-    {"name": "English", "folder": "English", "code": "en", "prompt_lang": "English"},
-    {"name": "Español", "folder": "Español", "code": "es", "prompt_lang": "Spanish"},
-    {"name": "Français", "folder": "Français", "code": "fr", "prompt_lang": "French"},
-    {"name": "Indonesia", "folder": "Indonesia", "code": "id", "prompt_lang": "Indonesian"},
-    {"name": "Italiano", "folder": "Italiano", "code": "it", "prompt_lang": "Italian"},
-    {"name": "Nederlands", "folder": "Nederlands", "code": "nl", "prompt_lang": "Dutch"},
-    {"name": "Norsk", "folder": "Norsk", "code": "no", "prompt_lang": "Norwegian"},
-    {"name": "Polski", "folder": "Polski", "code": "pl", "prompt_lang": "Polish"},
-    {"name": "Português", "folder": "Português", "code": "pt", "prompt_lang": "Portuguese"},
-    {"name": "Tiếng Việt", "folder": "Tiếng Việt", "code": "vi", "prompt_lang": "Vietnamese"},
-    {"name": "Türkçe", "folder": "Türkçe", "code": "tr", "prompt_lang": "Turkish"},
-    {"name": "ελληνικά", "folder": "ελληνικά", "code": "el", "prompt_lang": "Greek"},
-    {"name": "Русский", "folder": "Русский", "code": "ru", "prompt_lang": "Russian"},
-    {"name": "العربية", "folder": "العربية", "code": "ar", "prompt_lang": "Arabic"},
-    {"name": "हिन्दी", "folder": "हिन्दी", "code": "hi", "prompt_lang": "Hindi"},
-    {"name": "বাংলা", "folder": "বাংলা", "code": "bn", "prompt_lang": "Bengali"},
-    {"name": "한국어", "folder": "한국어", "code": "ko", "prompt_lang": "Korean"},
-    {"name": "中文", "folder": "中文", "code": "zh-TW", "prompt_lang": "Traditional Chinese"},
-    {"name": "日本語", "folder": "日本語", "code": "ja", "prompt_lang": "Japanese"},
+    {"name": "Deutsch", "folder": "Deutsch", "code": "de", "prompt_lang": "German", "channel": "NextRead Deutsch"},
+    {"name": "English", "folder": "English", "code": "en", "prompt_lang": "English", "channel": "NextRead English"},
+    {"name": "Español", "folder": "Español", "code": "es", "prompt_lang": "Spanish", "channel": "NextRead Español"},
+    {"name": "Français", "folder": "Français", "code": "fr", "prompt_lang": "French", "channel": "NextRead Français"},
+    {"name": "Indonesia", "folder": "Indonesia", "code": "id", "prompt_lang": "Indonesian", "channel": "NextRead Indonesia"},
+    {"name": "Italiano", "folder": "Italiano", "code": "it", "prompt_lang": "Italian", "channel": "NextRead Italiano"},
+    {"name": "Nederlands", "folder": "Nederlands", "code": "nl", "prompt_lang": "Dutch", "channel": "NextRead Nederlands"},
+    {"name": "Norsk", "folder": "Norsk", "code": "no", "prompt_lang": "Norwegian", "channel": "NextRead Norsk"},
+    {"name": "Polski", "folder": "Polski", "code": "pl", "prompt_lang": "Polish", "channel": "NextRead Polski"},
+    {"name": "Português", "folder": "Português", "code": "pt", "prompt_lang": "Portuguese", "channel": "NextRead Português"},
+    {"name": "Tiếng Việt", "folder": "Tiếng Việt", "code": "vi", "prompt_lang": "Vietnamese", "channel": "NextRead Tiếng Việt"},
+    {"name": "Türkçe", "folder": "Türkçe", "code": "tr", "prompt_lang": "Turkish", "channel": "NextRead Türkçe"},
+    {"name": "ελληνικά", "folder": "ελληνικά", "code": "el", "prompt_lang": "Greek", "channel": "NextRead ελληνικά"},
+    {"name": "Русский", "folder": "Русский", "code": "ru", "prompt_lang": "Russian", "channel": "NextRead Русский"},
+    {"name": "العربية", "folder": "العربية", "code": "ar", "prompt_lang": "Arabic", "channel": "NextRead العربية"},
+    {"name": "हिन्दी", "folder": "हिन्दी", "code": "hi", "prompt_lang": "Hindi", "channel": "NextRead हिन्दी"},
+    {"name": "বাংলা", "folder": "বাংলা", "code": "bn", "prompt_lang": "Bengali", "channel": "NextRead বাংলা"},
+    {"name": "한국어", "folder": "한국어", "code": "ko", "prompt_lang": "Korean", "channel": "NextRead 한국어"},
+    {"name": "中文", "folder": "中文", "code": "zh-TW", "prompt_lang": "Traditional Chinese", "channel": "NextRead 中文 (繁體)"},
+    {"name": "日本語", "folder": "日本語", "code": "ja", "prompt_lang": "Japanese", "channel": "NextRead 日本語"},
 ]
 
 AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac')
+
+def load_channels_config(config_path="channels_config.json"):
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not read {config_path}: {e}")
+    return {}
+
+def is_channel_enabled(lang_item, channels_cfg):
+    if not channels_cfg:
+        return True
+    ch_name = lang_item.get("channel", "")
+    folder_name = lang_item.get("folder", "")
+    if ch_name in channels_cfg:
+        return bool(channels_cfg[ch_name])
+    if folder_name in channels_cfg:
+        return bool(channels_cfg[folder_name])
+    return True
 
 def find_nlm_binary():
     nlm_path = shutil.which("nlm")
@@ -194,7 +214,6 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
     print(f"[+] নোটবুক তৈরি সফল (ID: {nb_id})")
     
     try:
-        # Step 2: Add Sources
         print(f"[*] নোটবুকে সোর্স যুক্ত করা হচ্ছে...")
         if source_type == "links":
             for url in source_data:
@@ -209,10 +228,8 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
                 print(f"[-] বই সোর্স যুক্ত করতে ব্যর্থ: {s_err or s_out}")
                 return False
 
-        # Step 3: Trigger Audio Generation
         custom_prompt = f"Generate the podcast entirely in {lang['prompt_lang']}."
         print(f"[*] অডিও জেনারেশন রিকোয়েস্ট পাঠানো হচ্ছে: {lang['name']} (কোড: {lang['code']})...")
-        print(f"    কাস্টম প্রম্পট: \"{custom_prompt}\"")
         
         a_code, a_out, a_err = run_nlm([
             "audio", "create", nb_id,
@@ -227,7 +244,6 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
 
         print(f"[+] অডিও জেনারেশন শুরু হয়েছে ({lang['name']})।")
 
-        # Step 4: Polling loop
         max_wait_seconds = 1800
         poll_interval = 300
         elapsed_seconds = 0
@@ -260,7 +276,6 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
             print(f"[-] ৩০ মিনিটের মধ্যে অডিও তৈরি সম্পন্ন হয়নি (টাইমআউট)।")
             return False
 
-        # Step 5: Download Audio
         temp_audio_file = f"/tmp/nlm_audio_{lang['folder']}_{int(time.time())}.m4a"
         print(f"[*] অডিও ডাউনলোড করা হচ্ছে...")
         
@@ -277,7 +292,6 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
             print(f"[-] অডিও ফাইল ডাউনলোড করা যায়নি: {d_err or d_out}")
             return False
 
-        # Step 6: Convert to MP3
         target_mp3 = os.path.join(output_folder, "podcast_audio.mp3")
         print(f"[*] অডিও ফাইল সেভ করা হচ্ছে: {target_mp3}...")
         conv_res = subprocess.run([
@@ -308,12 +322,15 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
 def main():
     parser = argparse.ArgumentParser(description="NotebookLM Multi-Account Audio Generator")
     parser.add_argument("--workspace", default="./Workspace", help="Path to Workspace directory")
+    parser.add_argument("--channels_config", default="channels_config.json", help="Path to channels_config.json")
     args = parser.parse_args()
 
     workspace_dir = os.path.abspath(args.workspace)
     if not os.path.exists(workspace_dir):
         print(f"Error: Workspace ফোল্ডার পাওয়া যায়নি: '{workspace_dir}'")
         sys.exit(1)
+
+    channels_cfg = load_channels_config(args.channels_config)
 
     raw_cookies_json = os.environ.get("COOKIES_POOL_JSON")
     if not raw_cookies_json:
@@ -342,6 +359,11 @@ def main():
     for idx, lang in enumerate(LANGUAGE_CONFIG, 1):
         lang_folder = os.path.join(workspace_dir, lang["folder"])
         
+        # channels_config.json-এ বন্ধ থাকলে অডিও তৈরি স্কিপ
+        if not is_channel_enabled(lang, channels_cfg):
+            print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [বন্ধ রাখা হয়েছে] '{lang['channel']}' channels_config.json-এ বন্ধ (False)। অডিও তৈরি স্কিপ করা হলো।")
+            continue
+
         if folder_has_audio(lang_folder):
             print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [SKIP] '{lang['folder']}' এ অডিও আগে থেকেই আছে। স্কিপ করা হচ্ছে।")
             continue
