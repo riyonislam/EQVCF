@@ -1,11 +1,54 @@
 import os
+import json
 import argparse
 import subprocess
 import concurrent.futures
 from PIL import Image, ImageStat
 
-# যেসব ফোল্ডারের ভিডিও তৈরি হবে না (বাদ দেওয়া হবে)
 EXCLUDED_FOLDERS = {"summary", "thumbnail fonts", "fonts"}
+
+FOLDER_TO_CHANNEL = {
+    'English': 'NextRead English',
+    'Summary': 'NextRead Summary',
+    'Deutsch': 'NextRead Deutsch',
+    'Nederlands': 'NextRead Nederlands',
+    'বাংলা': 'NextRead বাংলা',
+    'हिन्दी': 'NextRead हिन्दी',
+    'العربية': 'NextRead العربية',
+    '中文': 'NextRead 中文 (繁體)',
+    '日本語': 'NextRead 日本語',
+    'Русский': 'NextRead Русский',
+    'Türkçe': 'NextRead Türkçe',
+    'Polski': 'NextRead Polski',
+    'Português': 'NextRead Português',
+    'Indonesia': 'NextRead Indonesia',
+    '한국어': 'NextRead 한국어',
+    'Italiano': 'NextRead Italiano',
+    'ελληνικά': 'NextRead ελληνικά',
+    'Tiếng Việt': 'NextRead Tiếng Việt',
+    'Français': 'NextRead Français',
+    'Español': 'NextRead Español',
+    'Norsk': 'NextRead Norsk'
+}
+
+def load_channels_config(config_path="channels_config.json"):
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Could not read {config_path}: {e}")
+    return {}
+
+def is_channel_enabled(folder_name, channels_cfg):
+    if not channels_cfg:
+        return True
+    channel_name = FOLDER_TO_CHANNEL.get(folder_name, folder_name)
+    if channel_name in channels_cfg:
+        return bool(channels_cfg[channel_name])
+    if folder_name in channels_cfg:
+        return bool(channels_cfg[folder_name])
+    return True
 
 def is_background_dark(image_path, threshold=128):
     try:
@@ -76,19 +119,28 @@ def create_video_with_ffmpeg(folder_path, viz_white, viz_black):
     except Exception as e:
         return f"Python Error in '{os.path.basename(folder_path)}': {e}"
 
-def process_videos(base_folder_path, max_workers, viz_white, viz_black):
+def process_videos(base_folder_path, max_workers, viz_white, viz_black, channels_config_path="channels_config.json"):
     print(f"Scanning base folder: {base_folder_path}")
+    channels_cfg = load_channels_config(channels_config_path)
+
     subfolders = sorted([
         f for f in os.listdir(base_folder_path) 
         if os.path.isdir(os.path.join(base_folder_path, f)) and f.lower() not in EXCLUDED_FOLDERS
     ])
-    folders_to_process = [os.path.join(base_folder_path, f) for f in subfolders]
+    
+    folders_to_process = []
+    for f in subfolders:
+        ch_name = FOLDER_TO_CHANNEL.get(f, f)
+        if not is_channel_enabled(f, channels_cfg):
+            print(f"[বন্ধ রাখা হয়েছে] '{ch_name}' ({f}) channels_config.json-এ বন্ধ (False) আছে। ভিডিও তৈরি স্কিপ করা হলো।")
+            continue
+        folders_to_process.append(os.path.join(base_folder_path, f))
 
     if not folders_to_process:
-        print("No language folders found.")
+        print("No active language folders found for video generation.")
         return
 
-    print(f"Total folders found: {len(folders_to_process)}. Starting execution...")
+    print(f"\nTotal active folders to process: {len(folders_to_process)}. Starting video generation...")
 
     success_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -108,6 +160,7 @@ if __name__ == "__main__":
     parser.add_argument('--viz_white', type=str, required=True, help="Path to white GIF")
     parser.add_argument('--viz_black', type=str, required=True, help="Path to black GIF")
     parser.add_argument('--workers', type=int, default=4, help="Number of concurrent exports")
+    parser.add_argument('--channels_config', type=str, default='channels_config.json', help="Path to channels_config.json")
     
     args = parser.parse_args()
-    process_videos(args.input, args.workers, args.viz_white, args.viz_black)
+    process_videos(args.input, args.workers, args.viz_white, args.viz_black, args.channels_config)
