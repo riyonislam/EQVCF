@@ -62,10 +62,37 @@ def find_nlm_binary():
         return candidate
     return "nlm"
 
-def run_nlm(cmd_args, cookies, timeout=180, lang_code=None):
+def setup_account_session(cookies):
+    """
+    কুকি দিয়ে nlm login --manual রান করে সেশন লোকাল প্রোফাইলে সেভ করে নেয়।
+    নতুন ও পুরোনো (notebook.google.com / notebooklm.google.com) উভয় ডোমেইন সাপোর্ট করে।
+    """
+    nlm_bin = find_nlm_binary()
+    cookie_temp_path = "/tmp/nlm_active_cookie.txt"
+    with open(cookie_temp_path, "w", encoding="utf-8") as f:
+        f.write(cookies.strip())
+
+    base_hosts = ["https://notebook.google.com", "https://notebooklm.google.com"]
+    for host in base_hosts:
+        env = os.environ.copy()
+        env["NOTEBOOKLM_BASE_URL"] = host
+        cmd = [nlm_bin, "login", "--manual", "--file", cookie_temp_path]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+            if proc.returncode == 0 or "saved" in proc.stdout.lower() or "logged in" in proc.stdout.lower():
+                print(f"[+] অথেন্টিকেশন সফল হয়েছে! হোস্ট: {host}")
+                return host
+        except Exception:
+            pass
+
+    # ফলব্যাক হিসেবে প্রথম হোস্ট ধরে রাখা
+    return base_hosts[0]
+
+def run_nlm(cmd_args, cookies, timeout=180, lang_code=None, base_url="https://notebook.google.com"):
     nlm_bin = find_nlm_binary()
     env = os.environ.copy()
     env["NOTEBOOKLM_COOKIES"] = cookies
+    env["NOTEBOOKLM_BASE_URL"] = base_url
     if lang_code:
         env["NOTEBOOKLM_HL"] = lang_code
         
@@ -196,15 +223,16 @@ def detect_sources(workspace_dir):
 
     return None, None
 
-def generate_podcast_for_language(lang, cookie, source_type, source_data, output_folder):
+def generate_podcast_for_language(lang, cookie, source_type, source_data, output_folder, base_url):
     os.makedirs(output_folder, exist_ok=True)
-    nb_title = f"AutoPod_{lang['folder']}_{int(time.time())}"
+    # শুধুমাত্র ইংরেজি অক্ষর দিয়ে নোটবুকের নাম (যাতে ইউনিকোড এরর না হয়)
+    nb_title = f"Pod_{int(time.time())}"
     print(f"[*] নোটবুক তৈরি করা হচ্ছে: '{nb_title}' ({lang['name']})...")
     
-    code, out, err = run_nlm(["notebook", "create", nb_title, "--json"], cookie, lang_code=lang['code'])
+    code, out, err = run_nlm(["notebook", "create", nb_title, "--json"], cookie, lang_code=lang['code'], base_url=base_url)
     nb_id = extract_notebook_id(out)
     if not nb_id:
-        code, out, err = run_nlm(["notebook", "create", nb_title], cookie, lang_code=lang['code'])
+        code, out, err = run_nlm(["notebook", "create", nb_title], cookie, lang_code=lang['code'], base_url=base_url)
         nb_id = extract_notebook_id(out)
         
     if not nb_id:
@@ -218,12 +246,12 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
         if source_type == "links":
             for url in source_data:
                 print(f"    -> লিঙ্ক যুক্ত হচ্ছে: {url}")
-                s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--url", url, "--wait"], cookie, timeout=120, lang_code=lang['code'])
+                s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--url", url, "--wait"], cookie, timeout=120, lang_code=lang['code'], base_url=base_url)
                 if s_code != 0:
                     print(f"    [!] সতর্কতা: লিঙ্কটি যুক্ত হয়নি: {s_err or s_out}")
         elif source_type == "book":
             print(f"    -> বই ফাইলটি যুক্ত হচ্ছে: {source_data}")
-            s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--file", source_data, "--wait"], cookie, timeout=180, lang_code=lang['code'])
+            s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--file", source_data, "--wait"], cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
             if s_code != 0:
                 print(f"[-] বই সোর্স যুক্ত করতে ব্যর্থ: {s_err or s_out}")
                 return False
@@ -236,7 +264,7 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
             "--language", lang['code'],
             "--focus", custom_prompt,
             "--confirm"
-        ], cookie, timeout=120, lang_code=lang['code'])
+        ], cookie, timeout=120, lang_code=lang['code'], base_url=base_url)
         
         if a_code != 0:
             print(f"[-] অডিও জেনারেশন শুরু করতে ব্যর্থ: {a_err or a_out}")
@@ -256,10 +284,10 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
             time.sleep(poll_interval)
             elapsed_seconds += poll_interval
 
-            st_code, st_out, st_err = run_nlm(["studio", "status", nb_id, "--json"], cookie, timeout=60, lang_code=lang['code'])
+            st_code, st_out, st_err = run_nlm(["studio", "status", nb_id, "--json"], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
             status, art_id = check_audio_status(st_out)
             if status == "unknown":
-                st_code, st_out, st_err = run_nlm(["studio", "status", nb_id], cookie, timeout=60, lang_code=lang['code'])
+                st_code, st_out, st_err = run_nlm(["studio", "status", nb_id], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
                 status, art_id = check_audio_status(st_out)
 
             print(f"    [{elapsed_seconds // 60} মিনিটে স্ট্যাটাস]: {status.upper()} (Artifact ID: {art_id})")
@@ -283,10 +311,10 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
         if target_art_id:
             dl_cmd = ["download", "audio", nb_id, "--id", target_art_id, "--output", temp_audio_file]
             
-        d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'])
+        d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
         if d_code != 0 or not os.path.exists(temp_audio_file):
             dl_cmd = ["download", "audio", nb_id, "--output", temp_audio_file]
-            d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'])
+            d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
 
         if not os.path.exists(temp_audio_file) or os.path.getsize(temp_audio_file) == 0:
             print(f"[-] অডিও ফাইল ডাউনলোড করা যায়নি: {d_err or d_out}")
@@ -317,7 +345,7 @@ def generate_podcast_for_language(lang, cookie, source_type, source_data, output
 
     finally:
         print(f"[*] রিমোট নোটবুক মুছে ফেলা হচ্ছে...")
-        run_nlm(["notebook", "delete", nb_id, "--confirm"], cookie, timeout=60, lang_code=lang['code'])
+        run_nlm(["notebook", "delete", nb_id, "--confirm"], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
 
 def main():
     parser = argparse.ArgumentParser(description="NotebookLM Multi-Account Audio Generator")
@@ -356,12 +384,15 @@ def main():
     print("    NOTEBOOKLM MULTI-LANGUAGE AUDIO PIPELINE STARTED   ")
     print("=======================================================\n")
 
+    # বর্তমান অ্যাকাউন্টের সেশন প্রস্তুত করা
+    current_cookie = accounts[current_account_index]
+    active_base_url = setup_account_session(current_cookie)
+
     for idx, lang in enumerate(LANGUAGE_CONFIG, 1):
         lang_folder = os.path.join(workspace_dir, lang["folder"])
         
-        # channels_config.json-এ বন্ধ থাকলে অডিও তৈরি স্কিপ
         if not is_channel_enabled(lang, channels_cfg):
-            print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [বন্ধ রাখা হয়েছে] '{lang['channel']}' channels_config.json-এ বন্ধ (False)। অডিও তৈরি স্কিপ করা হলো।")
+            print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [বন্ধ রাখা হয়েছে] '{lang['channel']}' channels_config.json-এ বন্ধ (False)। স্কিপ করা হলো।")
             continue
 
         if folder_has_audio(lang_folder):
@@ -372,6 +403,8 @@ def main():
             print(f"\n[🔄 রোটেশন] অ্যাকাউন্ট #{current_account_index + 1}-এ ৩টি অডিও তৈরি শেষ। পরবর্তী অ্যাকাউন্টে সুইচ করা হচ্ছে...")
             current_account_index = (current_account_index + 1) % len(accounts)
             audios_on_current_account = 0
+            current_cookie = accounts[current_account_index]
+            active_base_url = setup_account_session(current_cookie)
             switch_delay = random.randint(120, 300)
             print(f"[⏳ অ্যান্টি-ব্যান] বিরতি: {switch_delay} সেকেন্ড স্লিপ হচ্ছে...\n")
             time.sleep(switch_delay)
@@ -383,9 +416,9 @@ def main():
         while not lang_success and attempt < max_attempts:
             current_cookie = accounts[current_account_index]
             print(f"\n>>> [{idx}/{len(LANGUAGE_CONFIG)}] {lang['name']} ({lang['folder']}) অডিও তৈরি শুরু <<<")
-            print(f"    ব্যবহার করা হচ্ছে অ্যাকাউন্ট #{current_account_index + 1}")
+            print(f"    ব্যবহার করা হচ্ছে অ্যাকাউন্ট #{current_account_index + 1} (হোস্ট: {active_base_url})")
 
-            success = generate_podcast_for_language(lang, current_cookie, source_type, source_data, lang_folder)
+            success = generate_podcast_for_language(lang, current_cookie, source_type, source_data, lang_folder, active_base_url)
 
             if success:
                 lang_success = True
@@ -398,6 +431,8 @@ def main():
                 print(f"[✗ ব্যর্থ] অ্যাকাউন্ট #{current_account_index + 1} ফেইল হয়েছে। পরবর্তী অ্যাকাউন্টে যাচ্ছি...")
                 current_account_index = (current_account_index + 1) % len(accounts)
                 audios_on_current_account = 0
+                current_cookie = accounts[current_account_index]
+                active_base_url = setup_account_session(current_cookie)
                 attempt += 1
                 fail_delay = random.randint(120, 300)
                 print(f"[⏳ অ্যান্টি-ব্যান] স্লিপ: {fail_delay} সেকেন্ড...\n")
