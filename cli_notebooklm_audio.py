@@ -3,10 +3,11 @@ import re
 import sys
 import json
 import time
-import random
 import shutil
 import argparse
 import subprocess
+import concurrent.futures
+from threading import Lock
 
 LANGUAGE_CONFIG = [
     {"name": "Deutsch", "folder": "Deutsch", "code": "de", "prompt_lang": "German", "channel": "NextRead Deutsch"},
@@ -32,14 +33,15 @@ LANGUAGE_CONFIG = [
 ]
 
 AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac')
+lock = Lock()
 
 def load_channels_config(config_path="channels_config.json"):
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
-            print(f"Warning: Could not read {config_path}: {e}")
+        except Exception:
+            pass
     return {}
 
 def is_channel_enabled(lang_item, channels_cfg):
@@ -55,117 +57,92 @@ def is_channel_enabled(lang_item, channels_cfg):
 
 def find_nlm_binary():
     nlm_path = shutil.which("nlm")
-    if nlm_path:
-        return nlm_path
+    if nlm_path: return nlm_path
     candidate = os.path.join(os.path.dirname(sys.executable), "nlm")
-    if os.path.exists(candidate):
-        return candidate
+    if os.path.exists(candidate): return candidate
     return "nlm"
 
-def setup_account_session(cookies):
-    """
-    কুকি দিয়ে nlm login --manual রান করে সেশন লোকাল প্রোফাইলে সেভ করে নেয়।
-    নতুন ও পুরোনো (notebook.google.com / notebooklm.google.com) উভয় ডোমেইন সাপোর্ট করে।
-    """
-    nlm_bin = find_nlm_binary()
-    cookie_temp_path = "/tmp/nlm_active_cookie.txt"
-    with open(cookie_temp_path, "w", encoding="utf-8") as f:
-        f.write(cookies.strip())
-
-    base_hosts = ["https://notebook.google.com", "https://notebooklm.google.com"]
-    for host in base_hosts:
-        env = os.environ.copy()
-        env["NOTEBOOKLM_BASE_URL"] = host
-        cmd = [nlm_bin, "login", "--manual", "--file", cookie_temp_path]
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
-            if proc.returncode == 0 or "saved" in proc.stdout.lower() or "logged in" in proc.stdout.lower():
-                print(f"[+] অথেন্টিকেশন সফল হয়েছে! হোস্ট: {host}")
-                return host
-        except Exception:
-            pass
-
-    # ফলব্যাক হিসেবে প্রথম হোস্ট ধরে রাখা
-    return base_hosts[0]
-
-def run_nlm(cmd_args, cookies, timeout=180, lang_code=None, base_url="https://notebook.google.com"):
-    nlm_bin = find_nlm_binary()
-    env = os.environ.copy()
-    env["NOTEBOOKLM_COOKIES"] = cookies
-    env["NOTEBOOKLM_BASE_URL"] = base_url
-    if lang_code:
-        env["NOTEBOOKLM_HL"] = lang_code
-        
-    full_cmd = [nlm_bin] + cmd_args
-    try:
-        proc = subprocess.run(
-            full_cmd,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout
-        )
-        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return -1, "", "কমান্ডের সময়সীমা অতিক্রম করেছে।"
-    except Exception as e:
-        return -1, "", str(e)
-
 def parse_cookies_pool(raw_json_str):
-    if not raw_json_str:
-        return []
+    if not raw_json_str: return []
     try:
         data = json.loads(raw_json_str.strip())
-    except Exception as e:
-        print(f"[!] Error parsing COOKIES_POOL_JSON: {e}")
+    except Exception:
         return []
-
     accounts = []
     if isinstance(data, list):
         for item in data:
             if isinstance(item, str):
-                c_str = item.strip().replace("\n", " ")
-                if c_str:
-                    accounts.append(c_str)
+                c = item.strip().replace("\n", " ")
+                if c: accounts.append(c)
             elif isinstance(item, dict):
-                if "cookies" in item and isinstance(item["cookies"], str):
-                    accounts.append(item["cookies"].strip().replace("\n", " "))
-                elif "cookie" in item and isinstance(item["cookie"], str):
-                    accounts.append(item["cookie"].strip().replace("\n", " "))
-                else:
-                    c_str = "; ".join([f"{k}={v}" for k, v in item.items() if isinstance(v, str)])
-                    if c_str:
-                        accounts.append(c_str)
-            elif isinstance(item, list):
-                pairs = []
-                for c in item:
-                    if isinstance(c, dict) and "name" in c and "value" in c:
-                        pairs.append(f"{c['name']}={c['value']}")
-                if pairs:
-                    accounts.append("; ".join(pairs))
-    elif isinstance(data, dict):
-        for k, v in data.items():
-            if isinstance(v, str):
-                accounts.append(v.strip().replace("\n", " "))
-            elif isinstance(v, dict) and "cookies" in v:
-                accounts.append(v["cookies"].strip().replace("\n", " "))
+                c = item.get("cookies") or item.get("cookie")
+                if c and isinstance(c, str):
+                    accounts.append(c.strip().replace("\n", " "))
     return accounts
+
+def folder_has_audio(folder_path):
+    if not os.path.exists(folder_path): return False
+    for f in os.listdir(folder_path):
+        if f.lower().endswith(AUDIO_EXTENSIONS):
+            return True
+    return False
+
+def detect_sources(workspace_dir):
+    for c in ["Link.txt", "link.txt", "LINK.TXT"]:
+        p = os.path.join(workspace_dir, c)
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                urls = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+            if urls: return "links", urls
+    for c in ["Book.txt", "book.txt", "BOOK.TXT"]:
+        p = os.path.join(workspace_dir, c)
+        if os.path.exists(p): return "book", p
+    return None, None
+
+def run_nlm_cmd(cmd_args, profile_name, cookie_str, base_url, timeout=120, lang_code=None):
+    nlm_bin = find_nlm_binary()
+    env = os.environ.copy()
+    env["NOTEBOOKLM_COOKIES"] = cookie_str
+    env["NOTEBOOKLM_BASE_URL"] = base_url
+    if lang_code:
+        env["NOTEBOOKLM_HL"] = lang_code
+    full_cmd = [nlm_bin, "--profile", profile_name] + cmd_args
+    try:
+        proc = subprocess.run(full_cmd, capture_output=True, text=True, env=env, timeout=timeout)
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except Exception as e:
+        return -1, "", str(e)
+
+def setup_profile_auth(profile_name, cookie_str):
+    nlm_bin = find_nlm_binary()
+    cookie_temp = f"/tmp/{profile_name}_cookie.txt"
+    with open(cookie_temp, "w", encoding="utf-8") as f:
+        f.write(cookie_str.strip())
+    hosts = ["https://notebook.google.com", "https://notebooklm.google.com"]
+    for host in hosts:
+        env = os.environ.copy()
+        env["NOTEBOOKLM_BASE_URL"] = host
+        cmd = [nlm_bin, "--profile", profile_name, "login", "--manual", "--file", cookie_temp]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+            if p.returncode == 0 or "saved" in p.stdout.lower() or "logged in" in p.stdout.lower():
+                return host
+        except Exception:
+            pass
+    return hosts[0]
 
 def extract_notebook_id(output):
     try:
         data = json.loads(output)
         if isinstance(data, dict):
             for k in ("id", "notebook_id", "notebookId"):
-                if k in data:
-                    return data[k]
+                if k in data: return data[k]
     except Exception:
         pass
     m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", output)
-    if m:
-        return m.group(1)
+    if m: return m.group(1)
     m = re.search(r"(?:Created notebook|notebook[:\s]+)\s*([a-zA-Z0-9_-]{10,})", output, re.IGNORECASE)
-    if m:
-        return m.group(1)
+    if m: return m.group(1)
     return None
 
 def check_audio_status(output):
@@ -180,7 +157,6 @@ def check_audio_status(output):
                 return status, art_id
     except Exception:
         pass
-    
     for line in output.splitlines():
         lower_line = line.lower()
         if "audio" in lower_line or "podcast" in lower_line:
@@ -188,262 +164,254 @@ def check_audio_status(output):
             art_id = art_id_match.group(1) if art_id_match else None
             if "completed" in lower_line or "✓" in line:
                 return "completed", art_id
-            elif "in_progress" in lower_line or "pending" in lower_line or "creating" in lower_line:
+            elif "in_progress" in lower_line or "pending" in lower_line:
                 return "in_progress", art_id
             elif "failed" in lower_line or "error" in lower_line or "✗" in line:
                 return "failed", art_id
     return "unknown", None
 
-def folder_has_audio(folder_path):
-    if not os.path.exists(folder_path):
-        return False
-    for f in os.listdir(folder_path):
-        if f.lower().endswith(AUDIO_EXTENSIONS):
-            return True
-    return False
+class AccountState:
+    def __init__(self, idx, cookie):
+        self.idx = idx
+        self.cookie = cookie
+        self.profile = f"acc_{idx}"
+        self.base_url = "https://notebook.google.com"
+        self.active_tasks = 0
+        self.total_completed = 0
+        self.is_ready = False
+        self.is_exhausted = False
+        self.assigned_tasks = []
 
-def detect_sources(workspace_dir):
-    link_candidates = ["Link.txt", "link.txt", "LINK.TXT"]
-    book_candidates = ["Book.txt", "book.txt", "BOOK.TXT"]
-    
-    for c in link_candidates:
-        p = os.path.join(workspace_dir, c)
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
-            if urls:
-                print(f"[+] সোর্স পাওয়া গেছে: {c} ফাইলে {len(urls)} টি লিঙ্ক রয়েছে।")
-                return "links", urls
+class AudioTask:
+    def __init__(self, lang_item):
+        self.lang = lang_item
+        self.name = lang_item["name"]
+        self.folder = lang_item["folder"]
+        self.code = lang_item["code"]
+        self.prompt_lang = lang_item["prompt_lang"]
+        self.status = "PENDING"  # PENDING, TRIGGERING, GENERATING, COMPLETED, FAILED
+        self.assigned_acc = None
+        self.nb_id = None
+        self.art_id = None
+        self.start_time = 0
+        self.tried_accounts = set()
 
-    for c in book_candidates:
-        p = os.path.join(workspace_dir, c)
-        if os.path.exists(p):
-            print(f"[+] সোর্স পাওয়া গেছে: {c} ফাইলটি সোর্স হিসেবে ব্যবহার হবে।")
-            return "book", p
-
-    return None, None
-
-def generate_podcast_for_language(lang, cookie, source_type, source_data, output_folder, base_url):
-    os.makedirs(output_folder, exist_ok=True)
-    # শুধুমাত্র ইংরেজি অক্ষর দিয়ে নোটবুকের নাম (যাতে ইউনিকোড এরর না হয়)
-    nb_title = f"Pod_{int(time.time())}"
-    print(f"[*] নোটবুক তৈরি করা হচ্ছে: '{nb_title}' ({lang['name']})...")
-    
-    code, out, err = run_nlm(["notebook", "create", nb_title, "--json"], cookie, lang_code=lang['code'], base_url=base_url)
+def trigger_task_generation(task, acc, source_type, source_data):
+    nb_title = f"Pod_{int(time.time())}_{random.randint(100, 999)}"
+    code, out, err = run_nlm_cmd(["notebook", "create", nb_title, "--json"], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
     nb_id = extract_notebook_id(out)
     if not nb_id:
-        code, out, err = run_nlm(["notebook", "create", nb_title], cookie, lang_code=lang['code'], base_url=base_url)
+        code, out, err = run_nlm_cmd(["notebook", "create", nb_title], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
         nb_id = extract_notebook_id(out)
-        
+
     if not nb_id:
-        print(f"[-] নোটবুক তৈরিতে ব্যর্থ। এরর: {err or out}")
-        return False
+        return False, f"Notebook create error: {err or out}"
 
-    print(f"[+] নোটবুক তৈরি সফল (ID: {nb_id})")
+    task.nb_id = nb_id
+
+    # Add Source
+    if source_type == "links":
+        for u in source_data:
+            run_nlm_cmd(["source", "add", nb_id, "--url", u, "--wait"], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
+    elif source_type == "book":
+        s_code, s_out, s_err = run_nlm_cmd(["source", "add", nb_id, "--file", source_data, "--wait"], acc.profile, acc.cookie, acc.base_url, timeout=120, lang_code=task.code)
+        if s_code != 0:
+            run_nlm_cmd(["notebook", "delete", nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30)
+            return False, f"Source add error: {s_err or s_out}"
+
+    # Trigger Audio
+    custom_prompt = f"Generate the podcast entirely in {task.prompt_lang}."
+    a_code, a_out, a_err = run_nlm_cmd([
+        "audio", "create", nb_id,
+        "--language", task.code,
+        "--focus", custom_prompt,
+        "--confirm"
+    ], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
+
+    if a_code != 0:
+        run_nlm_cmd(["notebook", "delete", nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30)
+        return False, f"Audio trigger error: {a_err or a_out}"
+
+    return True, None
+
+def print_live_tracker(accounts, tasks):
+    completed = sum(1 for t in tasks if t.status == "COMPLETED")
+    generating = sum(1 for t in tasks if t.status == "GENERATING")
+    pending = sum(1 for t in tasks if t.status == "PENDING")
     
-    try:
-        print(f"[*] নোটবুকে সোর্স যুক্ত করা হচ্ছে...")
-        if source_type == "links":
-            for url in source_data:
-                print(f"    -> লিঙ্ক যুক্ত হচ্ছে: {url}")
-                s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--url", url, "--wait"], cookie, timeout=120, lang_code=lang['code'], base_url=base_url)
-                if s_code != 0:
-                    print(f"    [!] সতর্কতা: লিঙ্কটি যুক্ত হয়নি: {s_err or s_out}")
-        elif source_type == "book":
-            print(f"    -> বই ফাইলটি যুক্ত হচ্ছে: {source_data}")
-            s_code, s_out, s_err = run_nlm(["source", "add", nb_id, "--file", source_data, "--wait"], cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
-            if s_code != 0:
-                print(f"[-] বই সোর্স যুক্ত করতে ব্যর্থ: {s_err or s_out}")
-                return False
-
-        custom_prompt = f"Generate the podcast entirely in {lang['prompt_lang']}."
-        print(f"[*] অডিও জেনারেশন রিকোয়েস্ট পাঠানো হচ্ছে: {lang['name']} (কোড: {lang['code']})...")
-        
-        a_code, a_out, a_err = run_nlm([
-            "audio", "create", nb_id,
-            "--language", lang['code'],
-            "--focus", custom_prompt,
-            "--confirm"
-        ], cookie, timeout=120, lang_code=lang['code'], base_url=base_url)
-        
-        if a_code != 0:
-            print(f"[-] অডিও জেনারেশন শুরু করতে ব্যর্থ: {a_err or a_out}")
-            return False
-
-        print(f"[+] অডিও জেনারেশন শুরু হয়েছে ({lang['name']})।")
-
-        max_wait_seconds = 1800
-        poll_interval = 300
-        elapsed_seconds = 0
-        audio_completed = False
-        target_art_id = None
-
-        print(f"[*] স্ট্যাটাস পর্যবেক্ষণ চলছে (প্রতি ৫ মিনিট পর পর চেক, সর্বোচ্চ ৩০ মিনিট)...")
-        while elapsed_seconds < max_wait_seconds:
-            print(f"    ৫ মিনিট অপেক্ষা করা হচ্ছে... (অতিবাহিত সময়: {elapsed_seconds // 60} মিনিট)")
-            time.sleep(poll_interval)
-            elapsed_seconds += poll_interval
-
-            st_code, st_out, st_err = run_nlm(["studio", "status", nb_id, "--json"], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
-            status, art_id = check_audio_status(st_out)
-            if status == "unknown":
-                st_code, st_out, st_err = run_nlm(["studio", "status", nb_id], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
-                status, art_id = check_audio_status(st_out)
-
-            print(f"    [{elapsed_seconds // 60} মিনিটে স্ট্যাটাস]: {status.upper()} (Artifact ID: {art_id})")
-
-            if status == "completed":
-                audio_completed = True
-                target_art_id = art_id
-                break
-            elif status == "failed":
-                print(f"[-] NotebookLM জানিয়েছে অডিও তৈরিতে সমস্যা হয়েছে।")
-                return False
-
-        if not audio_completed:
-            print(f"[-] ৩০ মিনিটের মধ্যে অডিও তৈরি সম্পন্ন হয়নি (টাইমআউট)।")
-            return False
-
-        temp_audio_file = f"/tmp/nlm_audio_{lang['folder']}_{int(time.time())}.m4a"
-        print(f"[*] অডিও ডাউনলোড করা হচ্ছে...")
-        
-        dl_cmd = ["download", "audio", nb_id, "--output", temp_audio_file]
-        if target_art_id:
-            dl_cmd = ["download", "audio", nb_id, "--id", target_art_id, "--output", temp_audio_file]
-            
-        d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
-        if d_code != 0 or not os.path.exists(temp_audio_file):
-            dl_cmd = ["download", "audio", nb_id, "--output", temp_audio_file]
-            d_code, d_out, d_err = run_nlm(dl_cmd, cookie, timeout=180, lang_code=lang['code'], base_url=base_url)
-
-        if not os.path.exists(temp_audio_file) or os.path.getsize(temp_audio_file) == 0:
-            print(f"[-] অডিও ফাইল ডাউনলোড করা যায়নি: {d_err or d_out}")
-            return False
-
-        target_mp3 = os.path.join(output_folder, "podcast_audio.mp3")
-        print(f"[*] অডিও ফাইল সেভ করা হচ্ছে: {target_mp3}...")
-        conv_res = subprocess.run([
-            "ffmpeg", "-y", "-i", temp_audio_file,
-            "-c:a", "libmp3lame", "-q:a", "2",
-            target_mp3
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        if conv_res.returncode != 0 or not os.path.exists(target_mp3):
-            target_m4a = os.path.join(output_folder, "podcast_audio.m4a")
-            shutil.copyfile(temp_audio_file, target_m4a)
-            print(f"[!] M4A ফরম্যাটে সেভ হয়েছে: {target_m4a}")
-        else:
-            print(f"[+] সফলভাবে MP3 অডিও সেভ হয়েছে: {target_mp3}")
-
-        if os.path.exists(temp_audio_file):
-            try:
-                os.remove(temp_audio_file)
-            except Exception:
-                pass
-
-        return True
-
-    finally:
-        print(f"[*] রিমোট নোটবুক মুছে ফেলা হচ্ছে...")
-        run_nlm(["notebook", "delete", nb_id, "--confirm"], cookie, timeout=60, lang_code=lang['code'], base_url=base_url)
+    print("\n" + "=" * 80)
+    print(f"📊 [LIVE TRACKER] মোট: {len(tasks)} | সম্পন্ন: {completed} ✓ | জেনারেট হচ্ছে: {generating} ⏳ | বাকি: {pending}")
+    print("-" * 80)
+    for acc in accounts:
+        if not acc.assigned_tasks:
+            continue
+        items_str = []
+        for t in acc.assigned_tasks:
+            elapsed = int(time.time() - t.start_time) // 60 if t.start_time else 0
+            if t.status == "COMPLETED":
+                items_str.append(f"{t.name}: [✓ সম্পন্ন]")
+            elif t.status == "GENERATING":
+                items_str.append(f"{t.name}: [⏳ জেনারেট হচ্ছে ({elapsed}মি)]")
+            elif t.status == "TRIGGERING":
+                items_str.append(f"{t.name}: [নোটবুক তৈরি হচ্ছে]")
+            elif t.status == "FAILED":
+                items_str.append(f"{t.name}: [✗ ফেইল]")
+        print(f"👤 Account #{acc.idx + 1} ({len(items_str)}/3): " + ", ".join(items_str))
+    print("=" * 80 + "\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="NotebookLM Multi-Account Audio Generator")
-    parser.add_argument("--workspace", default="./Workspace", help="Path to Workspace directory")
+    parser = argparse.ArgumentParser(description="NotebookLM Parallel Multi-Account Audio Engine")
+    parser.add_argument("--workspace", default="./Workspace", help="Workspace path")
     parser.add_argument("--channels_config", default="channels_config.json", help="Path to channels_config.json")
     args = parser.parse_args()
 
     workspace_dir = os.path.abspath(args.workspace)
-    if not os.path.exists(workspace_dir):
-        print(f"Error: Workspace ফোল্ডার পাওয়া যায়নি: '{workspace_dir}'")
-        sys.exit(1)
-
     channels_cfg = load_channels_config(args.channels_config)
-
     raw_cookies_json = os.environ.get("COOKIES_POOL_JSON")
+
     if not raw_cookies_json:
         print("Error: GitHub Secrets-এ 'COOKIES_POOL_JSON' সেট করা নেই।")
         sys.exit(1)
 
-    accounts = parse_cookies_pool(raw_cookies_json)
-    if not accounts:
-        print("Error: COOKIES_POOL_JSON থেকে কোনো অ্যাকাউন্ট পাওয়া যায়নি।")
+    account_cookies = parse_cookies_pool(raw_cookies_json)
+    if not account_cookies:
+        print("Error: COOKIES_POOL_JSON থেকে ভ্যালিড অ্যাকাউন্ট লোড করা যায়নি।")
         sys.exit(1)
-
-    print(f"[+] মোট {len(accounts)} টি গুগল অ্যাকাউন্ট লোড হয়েছে।")
 
     source_type, source_data = detect_sources(workspace_dir)
     if not source_type:
-        print(f"Error: {workspace_dir} ফোল্ডারে Link.txt বা Book.txt পাওয়া যায়নি।")
+        print("Error: Link.txt বা Book.txt কিছুই পাওয়া যায়নি।")
         sys.exit(1)
 
-    current_account_index = 0
-    audios_on_current_account = 0
-
-    print("\n=======================================================")
-    print("    NOTEBOOKLM MULTI-LANGUAGE AUDIO PIPELINE STARTED   ")
-    print("=======================================================\n")
-
-    # বর্তমান অ্যাকাউন্টের সেশন প্রস্তুত করা
-    current_cookie = accounts[current_account_index]
-    active_base_url = setup_account_session(current_cookie)
-
-    for idx, lang in enumerate(LANGUAGE_CONFIG, 1):
-        lang_folder = os.path.join(workspace_dir, lang["folder"])
-        
+    # ফিল্টারিং: বন্ধ থাকা চ্যানেল এবং এক্সিস্টিং অডিও বাদ দেওয়া
+    tasks_to_run = []
+    for lang in LANGUAGE_CONFIG:
         if not is_channel_enabled(lang, channels_cfg):
-            print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [বন্ধ রাখা হয়েছে] '{lang['channel']}' channels_config.json-এ বন্ধ (False)। স্কিপ করা হলো।")
             continue
-
-        if folder_has_audio(lang_folder):
-            print(f"[{idx}/{len(LANGUAGE_CONFIG)}] [SKIP] '{lang['folder']}' এ অডিও আগে থেকেই আছে। স্কিপ করা হচ্ছে।")
+        folder_path = os.path.join(workspace_dir, lang["folder"])
+        if folder_has_audio(folder_path):
+            print(f"[SKIP] '{lang['name']}' ({lang['folder']})-এ অডিও আগে থেকেই আছে। স্কিপ করা হলো।")
             continue
+        tasks_to_run.append(AudioTask(lang))
 
-        if audios_on_current_account >= 3:
-            print(f"\n[🔄 রোটেশন] অ্যাকাউন্ট #{current_account_index + 1}-এ ৩টি অডিও তৈরি শেষ। পরবর্তী অ্যাকাউন্টে সুইচ করা হচ্ছে...")
-            current_account_index = (current_account_index + 1) % len(accounts)
-            audios_on_current_account = 0
-            current_cookie = accounts[current_account_index]
-            active_base_url = setup_account_session(current_cookie)
-            switch_delay = random.randint(120, 300)
-            print(f"[⏳ অ্যান্টি-ব্যান] বিরতি: {switch_delay} সেকেন্ড স্লিপ হচ্ছে...\n")
-            time.sleep(switch_delay)
+    if not tasks_to_run:
+        print("[+] কোনো নতুন অডিও জেনারেট করার প্রয়োজন নেই। সব তৈরি আছে!")
+        sys.exit(0)
 
-        lang_success = False
-        attempt = 0
-        max_attempts = len(accounts)
+    print(f"\n[+] মোট {len(tasks_to_run)} টি ভাষার অডিও প্যারালালে তৈরি করতে হবে।")
+    print(f"[+] পুলে মোট {len(account_cookies)} টি অ্যাকাউন্ট প্রস্তুত রয়েছে।")
 
-        while not lang_success and attempt < max_attempts:
-            current_cookie = accounts[current_account_index]
-            print(f"\n>>> [{idx}/{len(LANGUAGE_CONFIG)}] {lang['name']} ({lang['folder']}) অডিও তৈরি শুরু <<<")
-            print(f"    ব্যবহার করা হচ্ছে অ্যাকাউন্ট #{current_account_index + 1} (হোস্ট: {active_base_url})")
+    accounts = [AccountState(i, c) for i, c in enumerate(account_cookies)]
 
-            success = generate_podcast_for_language(lang, current_cookie, source_type, source_data, lang_folder, active_base_url)
+    # অ্যাকাউন্টগুলোর অথেন্টিকেশন সেশন তৈরি (একবার করে নেওয়া)
+    print("\n[*] অ্যাকাউন্টগুলোর সেশন প্রস্তুত করা হচ্ছে...")
+    for acc in accounts:
+        acc.base_url = setup_profile_auth(acc.profile, acc.cookie)
+        acc.is_ready = True
+    print("[+] সকল অ্যাকাউন্টের সেশন প্রস্তুত!\n")
 
-            if success:
-                lang_success = True
-                audios_on_current_account += 1
-                print(f"[✓ সফল] {lang['name']} অডিও তৈরি হয়েছে ({audios_on_current_account}/3)")
-                post_gen_delay = random.randint(120, 300)
-                print(f"[⏳ অ্যান্টি-ব্যান] স্লিপ: {post_gen_delay} সেকেন্ড...\n")
-                time.sleep(post_gen_delay)
-            else:
-                print(f"[✗ ব্যর্থ] অ্যাকাউন্ট #{current_account_index + 1} ফেইল হয়েছে। পরবর্তী অ্যাকাউন্টে যাচ্ছি...")
-                current_account_index = (current_account_index + 1) % len(accounts)
-                audios_on_current_account = 0
-                current_cookie = accounts[current_account_index]
-                active_base_url = setup_account_session(current_cookie)
-                attempt += 1
-                fail_delay = random.randint(120, 300)
-                print(f"[⏳ অ্যান্টি-ব্যান] স্লিপ: {fail_delay} সেকেন্ড...\n")
-                time.sleep(fail_delay)
+    start_engine_time = time.time()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
-        if not lang_success:
-            print(f"[!] সতর্কতা: {lang['name']} এর অডিও তৈরি সম্ভব হয়নি।")
+    while True:
+        # ১. পেন্ডিং টাস্কগুলোকে এভেইলেবল অ্যাকাউন্টে অ্যাসাইন করা (প্রতি অ্যাকাউন্টে ৩টি করে)
+        with lock:
+            pending_tasks = [t for t in tasks_to_run if t.status == "PENDING"]
+            for task in pending_tasks:
+                available_acc = None
+                for acc in accounts:
+                    # যে অ্যাকাউন্টে ৩টির কম সক্রিয় টাস্ক আছে এবং মোট ৩টির বেশি সফল হয়নি
+                    if acc.is_ready and not acc.is_exhausted and acc.active_tasks < 3:
+                        if acc.idx not in task.tried_accounts:
+                            available_acc = acc
+                            break
 
-    print("\n=======================================================")
-    print("      NOTEBOOKLM অডিও পাইপলাইন সম্পন্ন হয়েছে!          ")
-    print("=======================================================\n")
+                if available_acc:
+                    task.status = "TRIGGERING"
+                    task.assigned_acc = available_acc
+                    task.tried_accounts.add(available_acc.idx)
+                    available_acc.active_tasks += 1
+                    if task not in available_acc.assigned_tasks:
+                        available_acc.assigned_tasks.append(task)
+
+                    def launch_job(t=task, a=available_acc):
+                        success, err = trigger_task_generation(t, a, source_type, source_data)
+                        with lock:
+                            if success:
+                                t.status = "GENERATING"
+                                t.start_time = time.time()
+                            else:
+                                print(f"[-] {t.name} অ্যাকাউন্টে ফেইল করেছে: {err}। পরবর্তী অ্যাকাউন্টে পাঠানো হবে।")
+                                t.status = "PENDING"
+                                a.active_tasks -= 1
+                                if t in a.assigned_tasks:
+                                    a.assigned_tasks.remove(t)
+
+                    executor.submit(launch_job)
+
+        # ২. লাইভ ট্র্যাকিং বোর্ড প্রিন্ট
+        print_live_tracker(accounts, tasks_to_run)
+
+        # ৩. সব টাস্ক সম্পন্ন হয়েছে কি না চেক
+        all_done = all(t.status in ("COMPLETED", "FAILED") for t in tasks_to_run)
+        if all_done:
+            break
+
+        # ৪. জেনারেটিং টাস্কগুলোর স্ট্যাটাস পোলিং
+        with lock:
+            active_gen_tasks = [t for t in tasks_to_run if t.status == "GENERATING"]
+
+        for task in active_gen_tasks:
+            acc = task.assigned_acc
+            st_code, st_out, st_err = run_nlm_cmd(["studio", "status", task.nb_id, "--json"], acc.profile, acc.cookie, acc.base_url, timeout=45, lang_code=task.code)
+            status, art_id = check_audio_status(st_out)
+            if status == "unknown":
+                st_code, st_out, st_err = run_nlm_cmd(["studio", "status", task.nb_id], acc.profile, acc.cookie, acc.base_url, timeout=45, lang_code=task.code)
+                status, art_id = check_audio_status(st_out)
+
+            if status == "completed":
+                print(f"[✓ প্রস্তুত!] {task.name} এর অডিও রেডি হয়েছে। ডাউনলোড হচ্ছে...")
+                temp_audio = f"/tmp/nlm_{task.folder}_{int(time.time())}.m4a"
+                dl_cmd = ["download", "audio", task.nb_id, "--output", temp_audio]
+                if art_id:
+                    dl_cmd = ["download", "audio", task.nb_id, "--id", art_id, "--output", temp_audio]
+
+                run_nlm_cmd(dl_cmd, acc.profile, acc.cookie, acc.base_url, timeout=120, lang_code=task.code)
+                target_folder = os.path.join(workspace_dir, task.folder)
+                os.makedirs(target_folder, exist_ok=True)
+                target_mp3 = os.path.join(target_folder, "podcast_audio.mp3")
+
+                # FFMPEG দিয়ে রূপান্তর
+                subprocess.run(["ffmpeg", "-y", "-i", temp_audio, "-c:a", "libmp3lame", "-q:a", "2", target_mp3], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if not os.path.exists(target_mp3):
+                    shutil.copyfile(temp_audio, os.path.join(target_folder, "podcast_audio.m4a"))
+
+                # রিমোট নোটবুক মুছে ফেলা
+                run_nlm_cmd(["notebook", "delete", task.nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30, lang_code=task.code)
+
+                with lock:
+                    task.status = "COMPLETED"
+                    acc.active_tasks -= 1
+                    acc.total_completed += 1
+                    if acc.total_completed >= 3:
+                        acc.is_exhausted = True
+
+            elif status == "failed" or (time.time() - task.start_time > 1500):  # ২৫ মিনিট টাইমআউট
+                print(f"[!] {task.name} জেনারেশন ফেইল করেছে বা সময় পার হয়েছে। নোটবুক ক্লিয়ার করে অন্য অ্যাকাউন্টে পাঠানো হচ্ছে...")
+                run_nlm_cmd(["notebook", "delete", task.nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30, lang_code=task.code)
+                with lock:
+                    task.status = "PENDING"
+                    acc.active_tasks -= 1
+                    if task in acc.assigned_tasks:
+                        acc.assigned_tasks.remove(t)
+
+        time.sleep(45)
+
+    executor.shutdown(wait=True)
+    total_elapsed = int(time.time() - start_engine_time) // 60
+    print("\n" + "=" * 80)
+    print(f"🎉 সকল ভাষার অডিও সফলভাবে তৈরি হয়েছে! মোট সময় লেগেছে: {total_elapsed} মিনিট।")
+    print("=" * 80 + "\n")
 
 if __name__ == "__main__":
     main()
