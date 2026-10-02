@@ -6,8 +6,6 @@ import time
 import shutil
 import argparse
 import subprocess
-import concurrent.futures
-from threading import Lock
 
 LANGUAGE_CONFIG = [
     {"name": "Deutsch", "folder": "Deutsch", "code": "de", "prompt_lang": "German", "channel": "NextRead Deutsch"},
@@ -33,7 +31,6 @@ LANGUAGE_CONFIG = [
 ]
 
 AUDIO_EXTENSIONS = ('.mp3', '.m4a', '.wav', '.ogg', '.flac', '.aac')
-lock = Lock()
 
 def load_channels_config(config_path="channels_config.json"):
     if os.path.exists(config_path):
@@ -99,37 +96,28 @@ def detect_sources(workspace_dir):
         if os.path.exists(p): return "book", p
     return None, None
 
-def run_nlm_cmd(cmd_args, profile_name, cookie_str, base_url, timeout=120, lang_code=None):
+def run_nlm(cmd_args, cookie_str, timeout=60, lang_code=None):
     nlm_bin = find_nlm_binary()
     env = os.environ.copy()
     env["NOTEBOOKLM_COOKIES"] = cookie_str
-    env["NOTEBOOKLM_BASE_URL"] = base_url
+    env["NOTEBOOKLM_BASE_URL"] = "https://notebook.google.com"
     if lang_code:
         env["NOTEBOOKLM_HL"] = lang_code
-    full_cmd = [nlm_bin, "--profile", profile_name] + cmd_args
+    full_cmd = [nlm_bin] + cmd_args
     try:
-        proc = subprocess.run(full_cmd, capture_output=True, text=True, env=env, timeout=timeout)
+        proc = subprocess.run(
+            full_cmd, 
+            capture_output=True, 
+            text=True, 
+            env=env, 
+            timeout=timeout,
+            stdin=subprocess.DEVNULL
+        )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "Timeout"
     except Exception as e:
         return -1, "", str(e)
-
-def setup_profile_auth(profile_name, cookie_str):
-    nlm_bin = find_nlm_binary()
-    cookie_temp = f"/tmp/{profile_name}_cookie.txt"
-    with open(cookie_temp, "w", encoding="utf-8") as f:
-        f.write(cookie_str.strip())
-    hosts = ["https://notebook.google.com", "https://notebooklm.google.com"]
-    for host in hosts:
-        env = os.environ.copy()
-        env["NOTEBOOKLM_BASE_URL"] = host
-        cmd = [nlm_bin, "--profile", profile_name, "login", "--manual", "--file", cookie_temp]
-        try:
-            p = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
-            if p.returncode == 0 or "saved" in p.stdout.lower() or "logged in" in p.stdout.lower():
-                return host
-        except Exception:
-            pass
-    return hosts[0]
 
 def extract_notebook_id(output):
     try:
@@ -170,97 +158,48 @@ def check_audio_status(output):
                 return "failed", art_id
     return "unknown", None
 
-class AccountState:
-    def __init__(self, idx, cookie):
-        self.idx = idx
-        self.cookie = cookie
-        self.profile = f"acc_{idx}"
-        self.base_url = "https://notebook.google.com"
-        self.active_tasks = 0
-        self.total_completed = 0
-        self.is_ready = False
-        self.is_exhausted = False
-        self.assigned_tasks = []
-
-class AudioTask:
+class Task:
     def __init__(self, lang_item):
         self.lang = lang_item
         self.name = lang_item["name"]
         self.folder = lang_item["folder"]
         self.code = lang_item["code"]
         self.prompt_lang = lang_item["prompt_lang"]
-        self.status = "PENDING"  # PENDING, TRIGGERING, GENERATING, COMPLETED, FAILED
-        self.assigned_acc = None
+        self.status = "PENDING"  # PENDING, GENERATING, COMPLETED, FAILED
+        self.acc_idx = None
         self.nb_id = None
         self.art_id = None
         self.start_time = 0
         self.tried_accounts = set()
 
-def trigger_task_generation(task, acc, source_type, source_data):
-    nb_title = f"Pod_{int(time.time())}_{random.randint(100, 999)}"
-    code, out, err = run_nlm_cmd(["notebook", "create", nb_title, "--json"], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
-    nb_id = extract_notebook_id(out)
-    if not nb_id:
-        code, out, err = run_nlm_cmd(["notebook", "create", nb_title], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
-        nb_id = extract_notebook_id(out)
-
-    if not nb_id:
-        return False, f"Notebook create error: {err or out}"
-
-    task.nb_id = nb_id
-
-    # Add Source
-    if source_type == "links":
-        for u in source_data:
-            run_nlm_cmd(["source", "add", nb_id, "--url", u, "--wait"], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
-    elif source_type == "book":
-        s_code, s_out, s_err = run_nlm_cmd(["source", "add", nb_id, "--file", source_data, "--wait"], acc.profile, acc.cookie, acc.base_url, timeout=120, lang_code=task.code)
-        if s_code != 0:
-            run_nlm_cmd(["notebook", "delete", nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30)
-            return False, f"Source add error: {s_err or s_out}"
-
-    # Trigger Audio
-    custom_prompt = f"Generate the podcast entirely in {task.prompt_lang}."
-    a_code, a_out, a_err = run_nlm_cmd([
-        "audio", "create", nb_id,
-        "--language", task.code,
-        "--focus", custom_prompt,
-        "--confirm"
-    ], acc.profile, acc.cookie, acc.base_url, timeout=90, lang_code=task.code)
-
-    if a_code != 0:
-        run_nlm_cmd(["notebook", "delete", nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30)
-        return False, f"Audio trigger error: {a_err or a_out}"
-
-    return True, None
-
-def print_live_tracker(accounts, tasks):
+def print_tracker(tasks, total_accounts):
     completed = sum(1 for t in tasks if t.status == "COMPLETED")
     generating = sum(1 for t in tasks if t.status == "GENERATING")
     pending = sum(1 for t in tasks if t.status == "PENDING")
     
     print("\n" + "=" * 80)
-    print(f"📊 [LIVE TRACKER] মোট: {len(tasks)} | সম্পন্ন: {completed} ✓ | জেনারেট হচ্ছে: {generating} ⏳ | বাকি: {pending}")
+    print(f"📊 [LIVE TRACKER] মোট: {len(tasks)} | সম্পন্ন: {completed} ✓ | ক্লাউডে জেনারেট হচ্ছে: {generating} ⏳ | বাকি: {pending}")
     print("-" * 80)
-    for acc in accounts:
-        if not acc.assigned_tasks:
-            continue
-        items_str = []
-        for t in acc.assigned_tasks:
-            elapsed = int(time.time() - t.start_time) // 60 if t.start_time else 0
+    acc_map = {}
+    for t in tasks:
+        if t.acc_idx is not None:
+            acc_map.setdefault(t.acc_idx, []).append(t)
+            
+    for acc_idx in sorted(acc_map.keys()):
+        items = []
+        for t in acc_map[acc_idx]:
             if t.status == "COMPLETED":
-                items_str.append(f"{t.name}: [✓ সম্পন্ন]")
+                items.append(f"{t.name}: [✓ সম্পন্ন]")
             elif t.status == "GENERATING":
-                items_str.append(f"{t.name}: [⏳ জেনারেট হচ্ছে ({elapsed}মি)]")
-            elif t.status == "TRIGGERING":
-                items_str.append(f"{t.name}: [নোটবুক তৈরি হচ্ছে]")
+                elapsed = int(time.time() - t.start_time) // 60
+                items.append(f"{t.name}: [⏳ জেনারেট হচ্ছে ({elapsed}মি)]")
             elif t.status == "FAILED":
-                items_str.append(f"{t.name}: [✗ ফেইল]")
-        print(f"👤 Account #{acc.idx + 1} ({len(items_str)}/3): " + ", ".join(items_str))
+                items.append(f"{t.name}: [✗ ফেইল]")
+        print(f"👤 Account #{acc_idx + 1} ({len(items)}/3): " + ", ".join(items))
     print("=" * 80 + "\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="NotebookLM Parallel Multi-Account Audio Engine")
+    parser = argparse.ArgumentParser(description="NotebookLM Smart Batch Audio Engine")
     parser.add_argument("--workspace", default="./Workspace", help="Workspace path")
     parser.add_argument("--channels_config", default="channels_config.json", help="Path to channels_config.json")
     args = parser.parse_args()
@@ -270,12 +209,12 @@ def main():
     raw_cookies_json = os.environ.get("COOKIES_POOL_JSON")
 
     if not raw_cookies_json:
-        print("Error: GitHub Secrets-এ 'COOKIES_POOL_JSON' সেট করা নেই।")
+        print("Error: GitHub Secrets-এ 'COOKIES_POOL_JSON' পাওয়া যায়নি।")
         sys.exit(1)
 
-    account_cookies = parse_cookies_pool(raw_cookies_json)
-    if not account_cookies:
-        print("Error: COOKIES_POOL_JSON থেকে ভ্যালিড অ্যাকাউন্ট লোড করা যায়নি।")
+    accounts = parse_cookies_pool(raw_cookies_json)
+    if not accounts:
+        print("Error: COOKIES_POOL_JSON থেকে অ্যাকাউন্ট লোড করা যায়নি।")
         sys.exit(1)
 
     source_type, source_data = detect_sources(workspace_dir)
@@ -283,134 +222,138 @@ def main():
         print("Error: Link.txt বা Book.txt কিছুই পাওয়া যায়নি।")
         sys.exit(1)
 
-    # ফিল্টারিং: বন্ধ থাকা চ্যানেল এবং এক্সিস্টিং অডিও বাদ দেওয়া
-    tasks_to_run = []
+    tasks = []
     for lang in LANGUAGE_CONFIG:
         if not is_channel_enabled(lang, channels_cfg):
             continue
         folder_path = os.path.join(workspace_dir, lang["folder"])
         if folder_has_audio(folder_path):
-            print(f"[SKIP] '{lang['name']}' ({lang['folder']})-এ অডিও আগে থেকেই আছে। স্কিপ করা হলো।")
+            print(f"[SKIP] '{lang['name']}' ফোল্ডারে অডিও আগে থেকেই আছে।")
             continue
-        tasks_to_run.append(AudioTask(lang))
+        tasks.append(Task(lang))
 
-    if not tasks_to_run:
-        print("[+] কোনো নতুন অডিও জেনারেট করার প্রয়োজন নেই। সব তৈরি আছে!")
+    if not tasks:
+        print("[+] কোনো নতুন অডিও জেনারেট করার প্রয়োজন নেই।")
         sys.exit(0)
 
-    print(f"\n[+] মোট {len(tasks_to_run)} টি ভাষার অডিও প্যারালালে তৈরি করতে হবে।")
-    print(f"[+] পুলে মোট {len(account_cookies)} টি অ্যাকাউন্ট প্রস্তুত রয়েছে।")
+    print(f"\n[+] মোট {len(tasks)} টি ভাষার অডিও স্বয়ংক্রিয়ভাবে তৈরি শুরু হচ্ছে।")
+    print(f"[+] পুলে মোট {len(accounts)} টি অ্যাকাউন্ট সক্রিয় রয়েছে।\n")
 
-    accounts = [AccountState(i, c) for i, c in enumerate(account_cookies)]
+    # -------------------------------------------------------------
+    # ধাপ ১: দ্রুত সবগুলো অডিও ক্লাউডে ট্রিগার করা (মাত্র ২ মিনিট)
+    # -------------------------------------------------------------
+    print(">>> ধাপ ১: সব কয়টি ভাষার অডিও গুগলের ক্লাউডে ট্রিগার করা হচ্ছে... <<<")
+    acc_usage = [0] * len(accounts)
 
-    # অ্যাকাউন্টগুলোর অথেন্টিকেশন সেশন তৈরি (একবার করে নেওয়া)
-    print("\n[*] অ্যাকাউন্টগুলোর সেশন প্রস্তুত করা হচ্ছে...")
-    for acc in accounts:
-        acc.base_url = setup_profile_auth(acc.profile, acc.cookie)
-        acc.is_ready = True
-    print("[+] সকল অ্যাকাউন্টের সেশন প্রস্তুত!\n")
+    for task in tasks:
+        # ৩টির কম ব্যবহৃত অ্যাকাউন্ট খুঁজে বের করা
+        assigned = False
+        for acc_idx in range(len(accounts)):
+            if acc_usage[acc_idx] < 3 and acc_idx not in task.tried_accounts:
+                cookie = accounts[acc_idx]
+                nb_title = f"Pod_{task.folder}_{int(time.time())}"
+                print(f"[*] Account #{acc_idx + 1} দিয়ে '{task.name}' ট্রিগার করা হচ্ছে...")
+                
+                # নোটবুক তৈরি
+                c_code, c_out, c_err = run_nlm(["notebook", "create", nb_title, "--json"], cookie, timeout=45, lang_code=task.code)
+                nb_id = extract_notebook_id(c_out)
+                if not nb_id:
+                    c_code, c_out, c_err = run_nlm(["notebook", "create", nb_title], cookie, timeout=45, lang_code=task.code)
+                    nb_id = extract_notebook_id(c_out)
 
-    start_engine_time = time.time()
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+                if not nb_id:
+                    print(f"[-] Account #{acc_idx + 1}-এ নোটবুক তৈরি ব্যর্থ। পরবর্তী অ্যাকাউন্টে পাঠানো হচ্ছে...")
+                    task.tried_accounts.add(acc_idx)
+                    continue
+
+                # সোর্স যোগ করা
+                if source_type == "links":
+                    for u in source_data:
+                        run_nlm(["source", "add", nb_id, "--url", u, "--wait"], cookie, timeout=60, lang_code=task.code)
+                elif source_type == "book":
+                    run_nlm(["source", "add", nb_id, "--file", source_data, "--wait"], cookie, timeout=90, lang_code=task.code)
+
+                # অডিও জেনারেশন স্টার্ট
+                custom_prompt = f"Generate the podcast entirely in {task.prompt_lang}."
+                a_code, a_out, a_err = run_nlm([
+                    "audio", "create", nb_id,
+                    "--language", task.code,
+                    "--focus", custom_prompt,
+                    "--confirm"
+                ], cookie, timeout=45, lang_code=task.code)
+
+                if a_code == 0:
+                    task.status = "GENERATING"
+                    task.nb_id = nb_id
+                    task.acc_idx = acc_idx
+                    task.start_time = time.time()
+                    acc_usage[acc_idx] += 1
+                    assigned = True
+                    print(f"[✓ সফল ট্রিগার] {task.name} এর অডিও ব্যাকগ্রাউন্ডে জেনারেট হওয়া শুরু হয়েছে!")
+                    break
+                else:
+                    run_nlm(["notebook", "delete", nb_id, "--confirm"], cookie, timeout=30)
+                    task.tried_accounts.add(acc_idx)
+
+        if not assigned:
+            print(f"[!] সতর্কতা: {task.name} কোনো অ্যাকাউন্টে শুরু করা যায়নি।")
+
+    print("\n[+] সকল ভাষার অডিও গুগলের ক্লাউড সার্ভারে একযোগে তৈরি হচ্ছে!\n")
+
+    # -------------------------------------------------------------
+    # ধাপ ২: লাইভ ট্র্যাকিং এবং রেডি হওয়া মাত্র ডাউনলোড (১০-১২ মিনিট)
+    # -------------------------------------------------------------
+    print(">>> ধাপ ২: ক্লাউড স্ট্যাটাস ট্র্যাকিং ও ডাউনলোড পর্ব শুরু... <<<")
+    start_wait_time = time.time()
 
     while True:
-        # ১. পেন্ডিং টাস্কগুলোকে এভেইলেবল অ্যাকাউন্টে অ্যাসাইন করা (প্রতি অ্যাকাউন্টে ৩টি করে)
-        with lock:
-            pending_tasks = [t for t in tasks_to_run if t.status == "PENDING"]
-            for task in pending_tasks:
-                available_acc = None
-                for acc in accounts:
-                    # যে অ্যাকাউন্টে ৩টির কম সক্রিয় টাস্ক আছে এবং মোট ৩টির বেশি সফল হয়নি
-                    if acc.is_ready and not acc.is_exhausted and acc.active_tasks < 3:
-                        if acc.idx not in task.tried_accounts:
-                            available_acc = acc
-                            break
+        print_tracker(tasks, len(accounts))
 
-                if available_acc:
-                    task.status = "TRIGGERING"
-                    task.assigned_acc = available_acc
-                    task.tried_accounts.add(available_acc.idx)
-                    available_acc.active_tasks += 1
-                    if task not in available_acc.assigned_tasks:
-                        available_acc.assigned_tasks.append(task)
-
-                    def launch_job(t=task, a=available_acc):
-                        success, err = trigger_task_generation(t, a, source_type, source_data)
-                        with lock:
-                            if success:
-                                t.status = "GENERATING"
-                                t.start_time = time.time()
-                            else:
-                                print(f"[-] {t.name} অ্যাকাউন্টে ফেইল করেছে: {err}। পরবর্তী অ্যাকাউন্টে পাঠানো হবে।")
-                                t.status = "PENDING"
-                                a.active_tasks -= 1
-                                if t in a.assigned_tasks:
-                                    a.assigned_tasks.remove(t)
-
-                    executor.submit(launch_job)
-
-        # ২. লাইভ ট্র্যাকিং বোর্ড প্রিন্ট
-        print_live_tracker(accounts, tasks_to_run)
-
-        # ৩. সব টাস্ক সম্পন্ন হয়েছে কি না চেক
-        all_done = all(t.status in ("COMPLETED", "FAILED") for t in tasks_to_run)
-        if all_done:
+        active_tasks = [t for t in tasks if t.status == "GENERATING"]
+        if not active_tasks:
             break
 
-        # ৪. জেনারেটিং টাস্কগুলোর স্ট্যাটাস পোলিং
-        with lock:
-            active_gen_tasks = [t for t in tasks_to_run if t.status == "GENERATING"]
-
-        for task in active_gen_tasks:
-            acc = task.assigned_acc
-            st_code, st_out, st_err = run_nlm_cmd(["studio", "status", task.nb_id, "--json"], acc.profile, acc.cookie, acc.base_url, timeout=45, lang_code=task.code)
+        for task in active_tasks:
+            cookie = accounts[task.acc_idx]
+            st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id, "--json"], cookie, timeout=30, lang_code=task.code)
             status, art_id = check_audio_status(st_out)
             if status == "unknown":
-                st_code, st_out, st_err = run_nlm_cmd(["studio", "status", task.nb_id], acc.profile, acc.cookie, acc.base_url, timeout=45, lang_code=task.code)
+                st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id], cookie, timeout=30, lang_code=task.code)
                 status, art_id = check_audio_status(st_out)
 
             if status == "completed":
-                print(f"[✓ প্রস্তুত!] {task.name} এর অডিও রেডি হয়েছে। ডাউনলোড হচ্ছে...")
+                print(f"\n[🎉 প্রস্তুত!] {task.name} এর অডিও সম্পূর্ণ হয়েছে। ডাউনলোড হচ্ছে...")
                 temp_audio = f"/tmp/nlm_{task.folder}_{int(time.time())}.m4a"
                 dl_cmd = ["download", "audio", task.nb_id, "--output", temp_audio]
                 if art_id:
                     dl_cmd = ["download", "audio", task.nb_id, "--id", art_id, "--output", temp_audio]
 
-                run_nlm_cmd(dl_cmd, acc.profile, acc.cookie, acc.base_url, timeout=120, lang_code=task.code)
+                run_nlm(dl_cmd, cookie, timeout=120, lang_code=task.code)
+                
                 target_folder = os.path.join(workspace_dir, task.folder)
                 os.makedirs(target_folder, exist_ok=True)
                 target_mp3 = os.path.join(target_folder, "podcast_audio.mp3")
 
-                # FFMPEG দিয়ে রূপান্তর
+                # FFMPEG রূপান্তর
                 subprocess.run(["ffmpeg", "-y", "-i", temp_audio, "-c:a", "libmp3lame", "-q:a", "2", target_mp3], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if not os.path.exists(target_mp3):
                     shutil.copyfile(temp_audio, os.path.join(target_folder, "podcast_audio.m4a"))
 
-                # রিমোট নোটবুক মুছে ফেলা
-                run_nlm_cmd(["notebook", "delete", task.nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30, lang_code=task.code)
+                # গুগল ক্লাউড থেকে নোটবুক ডিলিট
+                run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
+                task.status = "COMPLETED"
+                print(f"[✓ সেভ সম্পন্ন] {task.name} এর অডিও ফোল্ডারে সেভ হয়েছে!\n")
 
-                with lock:
-                    task.status = "COMPLETED"
-                    acc.active_tasks -= 1
-                    acc.total_completed += 1
-                    if acc.total_completed >= 3:
-                        acc.is_exhausted = True
-
-            elif status == "failed" or (time.time() - task.start_time > 1500):  # ২৫ মিনিট টাইমআউট
-                print(f"[!] {task.name} জেনারেশন ফেইল করেছে বা সময় পার হয়েছে। নোটবুক ক্লিয়ার করে অন্য অ্যাকাউন্টে পাঠানো হচ্ছে...")
-                run_nlm_cmd(["notebook", "delete", task.nb_id, "--confirm"], acc.profile, acc.cookie, acc.base_url, timeout=30, lang_code=task.code)
-                with lock:
-                    task.status = "PENDING"
-                    acc.active_tasks -= 1
-                    if task in acc.assigned_tasks:
-                        acc.assigned_tasks.remove(t)
+            elif status == "failed" or (time.time() - task.start_time > 1200): # ২০ মিনিট পার হলে
+                print(f"\n[!] {task.name} ব্যর্থ হয়েছে বা সময় পার হয়েছে। নোটবুক ক্লিয়ার করা হচ্ছে...")
+                run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
+                task.status = "FAILED"
 
         time.sleep(45)
 
-    executor.shutdown(wait=True)
-    total_elapsed = int(time.time() - start_engine_time) // 60
+    total_time = int(time.time() - start_wait_time) // 60
     print("\n" + "=" * 80)
-    print(f"🎉 সকল ভাষার অডিও সফলভাবে তৈরি হয়েছে! মোট সময় লেগেছে: {total_elapsed} মিনিট।")
+    print(f"🎉 সকল অডিও জেনারেশন পর্ব সমাপ্ত! মোট সময় লেগেছে: {total_time} মিনিট।")
     print("=" * 80 + "\n")
 
 if __name__ == "__main__":
