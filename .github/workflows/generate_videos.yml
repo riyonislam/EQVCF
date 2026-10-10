@@ -54,8 +54,9 @@ jobs:
           python cli_notebooklm_audio.py --workspace ./Workspace
 
       - name: Backup Audio Files to Google Drive
+        if: always()
         run: |
-          echo "Backing up newly generated audio files to Google Drive..."
+          echo "Backing up newly generated audio files to Google Drive (Safety Net)..."
           rclone copy ./Workspace "gdrive:All Folders" --include "*.mp3" --include "*.m4a" --verbose
 
       - name: Run Auto Video Creator Python Script
