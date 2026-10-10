@@ -158,6 +158,20 @@ def check_audio_status(output):
                 return "failed", art_id
     return "unknown", None
 
+def sync_audio_to_gdrive_instant(target_folder, folder_name):
+    """একটি অডিও ফাইল তৈরি হওয়ামাত্রই সরাসরি গুগল ড্রাইভে আপলোড করে নিরাপদ করা"""
+    try:
+        rclone_cmd = [
+            "rclone", "copy", target_folder,
+            f"gdrive:All Folders/{folder_name}",
+            "--include", "*.mp3",
+            "--include", "*.m4a"
+        ]
+        subprocess.run(rclone_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[✓ ক্লাউড ব্যাকআপ সফল] '{folder_name}' অডিও ফাইলটি অবিলম্বে গুগল ড্রাইভে সংরক্ষিত হয়েছে!")
+    except Exception as e:
+        print(f"[!] ড্রাইভ সিঙ্ক সতর্কতা: {e}")
+
 class Task:
     def __init__(self, lang_item):
         self.lang = lang_item
@@ -165,7 +179,7 @@ class Task:
         self.folder = lang_item["folder"]
         self.code = lang_item["code"]
         self.prompt_lang = lang_item["prompt_lang"]
-        self.status = "PENDING"  # PENDING, GENERATING, COMPLETED, FAILED
+        self.status = "PENDING"
         self.acc_idx = None
         self.nb_id = None
         self.art_id = None
@@ -228,12 +242,12 @@ def main():
             continue
         folder_path = os.path.join(workspace_dir, lang["folder"])
         if folder_has_audio(folder_path):
-            print(f"[SKIP] '{lang['name']}' ফোল্ডারে অডিও আগে থেকেই আছে।")
+            print(f"[SKIP] '{lang['name']}' ফোল্ডারে অডিও আগে থেকেই আছে। স্কিপ করা হলো।")
             continue
         tasks.append(Task(lang))
 
     if not tasks:
-        print("[+] কোনো নতুন অডিও জেনারেট করার প্রয়োজন নেই।")
+        print("[+] কোনো নতুন অডিও জেনারেট করার প্রয়োজন নেই। সব তৈরি আছে!")
         sys.exit(0)
 
     print(f"\n[+] মোট {len(tasks)} টি ভাষার অডিও স্বয়ংক্রিয়ভাবে তৈরি শুরু হচ্ছে।")
@@ -253,7 +267,6 @@ def main():
                 nb_title = f"Pod_{task.code}_{int(time.time())}"
                 print(f"[*] Account #{acc_idx + 1} দিয়ে '{task.name}' ট্রিগার করা হচ্ছে...")
                 
-                # নোটবুক তৈরি
                 c_code, c_out, c_err = run_nlm(["notebook", "create", nb_title, "--json"], cookie, timeout=45, lang_code=task.code)
                 nb_id = extract_notebook_id(c_out)
                 if not nb_id:
@@ -265,14 +278,12 @@ def main():
                     task.tried_accounts.add(acc_idx)
                     continue
 
-                # সোর্স যোগ করা
                 if source_type == "links":
                     for u in source_data:
                         run_nlm(["source", "add", nb_id, "--url", u, "--wait"], cookie, timeout=60, lang_code=task.code)
                 elif source_type == "book":
                     run_nlm(["source", "add", nb_id, "--file", source_data, "--wait"], cookie, timeout=90, lang_code=task.code)
 
-                # অডিও জেনারেশন স্টার্ট
                 custom_prompt = f"Generate the podcast entirely in {task.prompt_lang}."
                 a_code, a_out, a_err = run_nlm([
                     "audio", "create", nb_id,
@@ -300,7 +311,7 @@ def main():
     print("\n[+] সকল ভাষার অডিও গুগলের ক্লাউড সার্ভারে একযোগে তৈরি হচ্ছে!\n")
 
     # -------------------------------------------------------------
-    # ধাপ ২: লাইভ ট্র্যাকিং এবং রেডি হওয়া মাত্র ডাউনলোড
+    # ধাপ ২: লাইভ ট্র্যাকিং, নিরাপদ ডাউনলোড এবং তাত্ক্ষণিক ক্লাউড সিঙ্ক
     # -------------------------------------------------------------
     print(">>> ধাপ ২: ক্লাউড স্ট্যাটাস ট্র্যাকিং ও ডাউনলোড পর্ব শুরু... <<<")
     start_wait_time = time.time()
@@ -313,60 +324,68 @@ def main():
             break
 
         for task in active_tasks:
-            cookie = accounts[task.acc_idx]
-            st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id, "--json"], cookie, timeout=30, lang_code=task.code)
-            status, art_id = check_audio_status(st_out)
-            if status == "unknown":
-                st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id], cookie, timeout=30, lang_code=task.code)
+            try:
+                cookie = accounts[task.acc_idx]
+                st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id, "--json"], cookie, timeout=30, lang_code=task.code)
                 status, art_id = check_audio_status(st_out)
+                if status == "unknown":
+                    st_code, st_out, st_err = run_nlm(["studio", "status", task.nb_id], cookie, timeout=30, lang_code=task.code)
+                    status, art_id = check_audio_status(st_out)
 
-            if status == "completed":
-                print(f"\n[🎉 প্রস্তুত!] {task.name} এর অডিও সম্পূর্ণ হয়েছে। ডাউনলোড হচ্ছে...")
-                
-                # নিরাপদ ইংরেজি কোড নাম ব্যবহার (যেমন nlm_ja_...m4a) যাতে ইউনিকোড ক্র্যাশ না হয়
-                clean_code = re.sub(r'[^a-zA-Z0-9_-]', '', task.code)
-                temp_audio = f"/tmp/nlm_{clean_code}_{int(time.time())}.m4a"
-                
-                download_success = False
-                for attempt in range(2):
-                    if art_id and attempt == 0:
-                        dl_cmd = ["download", "audio", task.nb_id, "--id", art_id, "--output", temp_audio]
-                    else:
-                        dl_cmd = ["download", "audio", task.nb_id, "--output", temp_audio]
-
-                    run_nlm(dl_cmd, cookie, timeout=120, lang_code=task.code)
-                    if os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 1000:
-                        download_success = True
-                        break
-                    time.sleep(3)
-
-                if download_success:
-                    target_folder = os.path.join(workspace_dir, task.folder)
-                    os.makedirs(target_folder, exist_ok=True)
-                    target_mp3 = os.path.join(target_folder, "podcast_audio.mp3")
-
-                    # FFMPEG রূপান্তর
-                    subprocess.run(
-                        ["ffmpeg", "-y", "-i", temp_audio, "-c:a", "libmp3lame", "-q:a", "2", target_mp3], 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL
-                    )
+                if status == "completed":
+                    print(f"\n[🎉 প্রস্তুত!] {task.name} এর অডিও সম্পূর্ণ হয়েছে। ডাউনলোড হচ্ছে...")
                     
-                    if not os.path.exists(target_mp3):
-                        shutil.copyfile(temp_audio, os.path.join(target_folder, "podcast_audio.m4a"))
+                    clean_code = re.sub(r'[^a-zA-Z0-9_-]', '', task.code)
+                    temp_audio = f"/tmp/nlm_{clean_code}_{int(time.time())}.m4a"
+                    
+                    download_success = False
+                    for attempt in range(2):
+                        if art_id and attempt == 0:
+                            dl_cmd = ["download", "audio", task.nb_id, "--id", art_id, "--output", temp_audio]
+                        else:
+                            dl_cmd = ["download", "audio", task.nb_id, "--output", temp_audio]
 
-                    # সফল হলে গুগল ক্লাউড থেকে নোটবুক ডিলিট
+                        run_nlm(dl_cmd, cookie, timeout=120, lang_code=task.code)
+                        if os.path.exists(temp_audio) and os.path.getsize(temp_audio) > 1000:
+                            download_success = True
+                            break
+                        time.sleep(3)
+
+                    if download_success:
+                        target_folder = os.path.join(workspace_dir, task.folder)
+                        os.makedirs(target_folder, exist_ok=True)
+                        target_mp3 = os.path.join(target_folder, "podcast_audio.mp3")
+
+                        # FFMPEG রূপান্তর
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-i", temp_audio, "-c:a", "libmp3lame", "-q:a", "2", target_mp3], 
+                            stdout=subprocess.DEVNULL, 
+                            stderr=subprocess.DEVNULL
+                        )
+                        
+                        if not os.path.exists(target_mp3):
+                            shutil.copyfile(temp_audio, os.path.join(target_folder, "podcast_audio.m4a"))
+
+                        # 🌟 তাত্ক্ষণিক গুগল ড্রাইভ ক্লাউড ব্যাকআপ
+                        sync_audio_to_gdrive_instant(target_folder, task.folder)
+
+                        # রিমোট নোটবুক মুছে ফেলা
+                        run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
+                        task.status = "COMPLETED"
+                        print(f"[✓ সেভ সম্পন্ন] {task.name} এর অডিও প্রস্তুত ও ব্যাকআপ সম্পন্ন!\n")
+                    else:
+                        print(f"[-] {task.name} এর অডিও ডাউনলোড ব্যর্থ হয়েছে। নোটবুক রেখে দেওয়া হচ্ছে...")
+                        task.status = "FAILED"
+
+                elif status == "failed" or (time.time() - task.start_time > 1500):
+                    print(f"\n[!] {task.name} ব্যর্থ হয়েছে বা সময় পার হয়েছে। নোটবুক ক্লিয়ার করা হচ্ছে...")
                     run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
-                    task.status = "COMPLETED"
-                    print(f"[✓ সেভ সম্পন্ন] {task.name} এর অডিও ফোল্ডারে সেভ হয়েছে!\n")
-                else:
-                    print(f"[-] {task.name} এর অডিও ডাউনলোড ব্যর্থ হয়েছে। নোটবুক রেখে দেওয়া হচ্ছে...")
                     task.status = "FAILED"
 
-            elif status == "failed" or (time.time() - task.start_time > 1500): # ২৫ মিনিট পার হলে
-                print(f"\n[!] {task.name} ব্যর্থ হয়েছে বা সময় পার হয়েছে। নোটবুক ক্লিয়ার করা হচ্ছে...")
-                run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
-                task.status = "FAILED"
+            except Exception as e:
+                print(f"[!] '{task.name}' প্রসেসিংয়ে অপ্রত্যাশিত ত্রুটি: {e}")
+                # একটি ভাষায় এরর হলেও পুরো স্ক্রিপ্ট যেন ক্র্যাশ না করে
+                continue
 
         time.sleep(45)
 
