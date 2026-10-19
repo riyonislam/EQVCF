@@ -159,7 +159,6 @@ def check_audio_status(output):
     return "unknown", None
 
 def sync_audio_to_gdrive_instant(target_folder, folder_name):
-    """একটি অডিও ফাইল তৈরি হওয়ামাত্রই সরাসরি গুগল ড্রাইভে আপলোড করে নিরাপদ করা"""
     try:
         rclone_cmd = [
             "rclone", "copy", target_folder,
@@ -274,7 +273,9 @@ def main():
                     nb_id = extract_notebook_id(c_out)
 
                 if not nb_id:
-                    print(f"[-] Account #{acc_idx + 1}-এ নোটবুক তৈরি ব্যর্থ। পরবর্তী অ্যাকাউন্টে পাঠানো হচ্ছে...")
+                    # সংক্ষিপ্ত কারণ দেখানো হচ্ছে (যাতে সহজেই কুকিজ ত্রুটি বোঝা যায়)
+                    err_msg = (c_err or c_out).split("\n")[-1][:80]
+                    print(f"[-] Account #{acc_idx + 1}-এ নোটবুক তৈরি ব্যর্থ ({err_msg})। পরবর্তী অ্যাকাউন্টে পাঠানো হচ্ছে...")
                     task.tried_accounts.add(acc_idx)
                     continue
 
@@ -308,10 +309,10 @@ def main():
         if not assigned:
             print(f"[!] সতর্কতা: {task.name} কোনো অ্যাকাউন্টে শুরু করা যায়নি।")
 
-    print("\n[+] সকল ভাষার অডিও গুগলের ক্লাউড সার্ভারে একযোগে তৈরি হচ্ছে!\n")
+    print("\n[+] সক্রিয় ভাষাগুলোর অডিও গুগলের ক্লাউড সার্ভারে তৈরি হচ্ছে!\n")
 
     # -------------------------------------------------------------
-    # ধাপ ২: লাইভ ট্র্যাকিং, নিরাপদ ডাউনলোড এবং তাত্ক্ষণিক ক্লাউড সিঙ্ক
+    # ধাপ ২: লাইভ ট্র্যাকিং ও ডাউনলোড
     # -------------------------------------------------------------
     print(">>> ধাপ ২: ক্লাউড স্ট্যাটাস ট্র্যাকিং ও ডাউনলোড পর্ব শুরু... <<<")
     start_wait_time = time.time()
@@ -356,7 +357,6 @@ def main():
                         os.makedirs(target_folder, exist_ok=True)
                         target_mp3 = os.path.join(target_folder, "podcast_audio.mp3")
 
-                        # FFMPEG রূপান্তর
                         subprocess.run(
                             ["ffmpeg", "-y", "-i", temp_audio, "-c:a", "libmp3lame", "-q:a", "2", target_mp3], 
                             stdout=subprocess.DEVNULL, 
@@ -366,10 +366,8 @@ def main():
                         if not os.path.exists(target_mp3):
                             shutil.copyfile(temp_audio, os.path.join(target_folder, "podcast_audio.m4a"))
 
-                        # 🌟 তাত্ক্ষণিক গুগল ড্রাইভ ক্লাউড ব্যাকআপ
                         sync_audio_to_gdrive_instant(target_folder, task.folder)
 
-                        # রিমোট নোটবুক মুছে ফেলা
                         run_nlm(["notebook", "delete", task.nb_id, "--confirm"], cookie, timeout=30)
                         task.status = "COMPLETED"
                         print(f"[✓ সেভ সম্পন্ন] {task.name} এর অডিও প্রস্তুত ও ব্যাকআপ সম্পন্ন!\n")
@@ -383,8 +381,7 @@ def main():
                     task.status = "FAILED"
 
             except Exception as e:
-                print(f"[!] '{task.name}' প্রসেসিংয়ে অপ্রত্যাশিত ত্রুটি: {e}")
-                # একটি ভাষায় এরর হলেও পুরো স্ক্রিপ্ট যেন ক্র্যাশ না করে
+                print(f"[!] '{task.name}' প্রসেসিংয়ে সমস্যা: {e}")
                 continue
 
         time.sleep(45)
